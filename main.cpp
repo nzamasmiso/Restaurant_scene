@@ -1,25 +1,22 @@
+/ main.cpp
+
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+
 #include <iostream>
 #include <vector>
 #include <string>
-#include <unordered_map>
 #include <cmath>
 
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
-
-// Include GLM
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
-// ImGui
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 
-// Shader sources
+// Vertex shader
 const char* vertexShaderSrc = R"(
 #version 330 core
 layout (location=0) in vec3 aPos;
@@ -35,13 +32,14 @@ uniform mat4 view;
 uniform mat4 projection;
 
 void main() {
-    FragPos = vec3(model * vec4(aPos,1.0));
+    FragPos = vec3(model * vec4(aPos, 1.0));
     Normal = mat3(transpose(inverse(model))) * aNormal;
     TexCoord = aTexCoord;
-    gl_Position = projection * view * vec4(FragPos,1.0);
+    gl_Position = projection * view * vec4(FragPos, 1.0);
 }
 )";
 
+// Fragment shader
 const char* fragmentShaderSrc = R"(
 #version 330 core
 out vec4 FragColor;
@@ -50,49 +48,68 @@ in vec3 FragPos;
 in vec3 Normal;
 in vec2 TexCoord;
 
-uniform sampler2D albedoMap;
-uniform sampler2D normalMap;
-uniform vec3 lightPos;
 uniform vec3 viewPos;
 
+struct Light {
+    vec3 position;
+    vec3 color;
+    float intensity;
+};
+uniform Light dirLight;
+uniform Light pointLights[4];
+uniform Light spotLights[2];
+
+uniform float shininess;
+
 void main() {
-    vec3 albedo = texture(albedoMap, TexCoord).rgb;
-    vec3 normalMapSample = texture(normalMap, TexCoord).rgb * 2.0 - 1.0;
-    vec3 N = normalize(Normal + normalMapSample);
-    vec3 L = normalize(lightPos - FragPos);
-    float diff = max(dot(N, L), 0.0);
-    vec3 diffuse = diff * albedo;
-    vec3 ambient = 0.2 * albedo;
-    vec3 V = normalize(viewPos - FragPos);
-    vec3 R = reflect(-L, N);
-    float spec = pow(max(dot(V, R), 0.0), 32);
-    vec3 specular = spec * vec3(1.0);
-    vec3 color = ambient + diffuse + specular;
-    FragColor = vec4(color, 1.0);
+    vec3 norm = normalize(Normal);
+    vec3 viewDir = normalize(viewPos - FragPos);
+    vec3 albedo = vec3(0.8); // white color
+
+    vec3 ambient = 0.1 * albedo;
+    vec3 result = ambient;
+
+    // Directional light
+    vec3 lightDir = normalize(-vec3(0.0, -1.0, -1.0));
+    float diff = max(dot(norm, lightDir), 0.0);
+    result += diff * dirLight.color * dirLight.intensity;
+
+    // Point lights
+    for (int i=0; i<4; ++i) {
+        vec3 toLight = normalize(pointLights[i].position - FragPos);
+        float diffPL = max(dot(norm, toLight), 0.0);
+        vec3 diffusePL = diffPL * pointLights[i].color * pointLights[i].intensity;
+        vec3 halfwayDir = normalize(toLight + viewDir);
+        float spec = pow(max(dot(norm, halfwayDir), 0.0), shininess);
+        vec3 specular = spec * pointLights[i].color * pointLights[i].intensity;
+        result += diffusePL + specular;
+    }
+
+    // Spotlights
+    for (int i=0; i<2; ++i) {
+        vec3 toLight = normalize(spotLights[i].position - FragPos);
+        float theta = dot(toLight, normalize(-spotLights[i].position));
+        float cutoff = cos(radians(12.5));
+        float outerCutoff = cos(radians(17.5));
+        float intensityFactor = smoothstep(cutoff, outerCutoff, theta);
+        float diffSpot = max(dot(norm, toLight), 0.0);
+        vec3 diffuseSpot = diffSpot * spotLights[i].color * spotLights[i].intensity * intensityFactor;
+        vec3 halfwayDir = normalize(toLight + viewDir);
+        float spec = pow(max(dot(norm, halfwayDir), 0.0), shininess);
+        vec3 specularSpot = spec * spotLights[i].color * spotLights[i].intensity * intensityFactor;
+        result += diffuseSpot + specularSpot;
+    }
+
+    FragColor = vec4(result,1.0);
 }
 )";
 
-// Globals
-GLFWwindow* window;
-unsigned int SCR_WIDTH=1280, SCR_HEIGHT=720;
-float yaw=0.0f, pitch=20.0f, radius=80.0f;
-bool showUI=true;
-bool dayMode=true;
-
-// Textures
-std::unordered_map<std::string, GLuint> textures;
-
-// Shader program
-GLuint shaderProgram;
-
-// Mesh struct
+// Data structures
 struct Mesh {
-    GLuint VAO, VBO, EBO;
-    unsigned int indexCount;
-    GLuint albedoTex, normalTex;
+    std::vector<GLuint> VAOs, VBOs, EBOs;
+    std::vector<unsigned int> indexCounts;
 };
 
-// Scene object
 struct SceneObject {
     Mesh mesh;
     glm::vec3 pos;
@@ -100,15 +117,155 @@ struct SceneObject {
     glm::vec3 scale;
     std::string name;
 };
-std::vector<SceneObject> sceneObjects;
 
-// Compile shader
-GLuint compileShader(GLenum type, const char* src){
+// Globals
+GLFWwindow* window;
+unsigned int SCR_WIDTH=1280, SCR_HEIGHT=720;
+float yaw=45.0f, radius=80.0f;
+bool showUI=true;
+bool dayMode=true;
+GLuint shaderProgram;
+
+// Function prototypes
+GLuint compileShader(GLenum type, const char* src);
+GLuint createShaderProgram();
+Mesh createCubeMesh();
+void setupScene(std::vector<SceneObject>& sceneObjects, Mesh& cubeMesh);
+void drawScene(const std::vector<SceneObject>& sceneObjects, const glm::mat4& view, const glm::mat4& projection);
+
+int main() {
+    // GLFW init
+    if (!glfwInit()) { std::cerr<<"Failed to init GLFW"; return -1; }
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
+    window=glfwCreateWindow(SCR_WIDTH,SCR_HEIGHT,"Cube Scene",nullptr,nullptr);
+    if (!window){ std::cerr<<"Failed to create GLFW"; glfwTerminate(); return -1; }
+    glfwMakeContextCurrent(window);
+    glewExperimental=true; glewInit();
+
+    // Setup ImGui
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::StyleColorsDark();
+    ImGui_ImplGlfw_InitForOpenGL(window,true);
+    ImGui_ImplOpenGL3_Init("#version 330");
+
+    // Compile shader
+    GLuint shader=createShaderProgram();
+
+    // Create cube mesh
+    Mesh cubeMesh = createCubeMesh();
+
+    // Scene objects container
+    std::vector<SceneObject> sceneObjects;
+
+    // Setup scene with cubes (matching the sketch)
+    setupScene(sceneObjects, cubeMesh);
+
+    glEnable(GL_DEPTH_TEST);
+
+    // Main loop
+    while (!glfwWindowShouldClose(window)){
+        // Input
+        if(glfwGetKey(window,GLFW_KEY_ESCAPE)==GLFW_PRESS)
+            glfwSetWindowShouldClose(window,true);
+
+        // Camera
+        float camX=cos(glm::radians(yaw))*radius;
+        float camZ=sin(glm::radians(yaw))*radius;
+        glm::vec3 camPos(camX,20,camZ);
+        glm::mat4 view=glm::lookAt(camPos, glm::vec3(0), glm::vec3(0,1,0));
+        glm::mat4 projection=glm::perspective(glm::radians(45.0f),(float)SCR_WIDTH/SCR_HEIGHT,0.1f,200.0f);
+
+        // Clear
+        if(dayMode) glClearColor(0.5f,0.8f,1.0f,1);
+        else glClearColor(0.1f,0.1f,0.2f,1);
+        glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+
+        // Draw scene
+        glUseProgram(shader);
+        // Set lights
+        glUniform3f(glGetUniformLocation(shader,"dirLight.position"), 0.0f, 10.0f, 0.0f);
+        glUniform3f(glGetUniformLocation(shader,"dirLight.color"), 1.0f,1.0f,1.0f);
+        glUniform1f(glGetUniformLocation(shader,"dirLight.intensity"), 0.5f);
+        glUniform3f(glGetUniformLocation(shader,"pointLights[0].position"), 5.0f,4.0f,5.0f);
+        glUniform3f(glGetUniformLocation(shader,"pointLights[0].color"), 1.0f,0.8f,0.6f);
+        glUniform1f(glGetUniformLocation(shader,"pointLights[0].intensity"), 0.8f);
+        glUniform3f(glGetUniformLocation(shader,"pointLights[1].position"), -5.0f,4.0f,-5.0f);
+        glUniform3f(glGetUniformLocation(shader,"pointLights[1].color"), 1.0f,0.8f,0.6f);
+        glUniform1f(glGetUniformLocation(shader,"pointLights[1].intensity"), 0.8f);
+        // Spotlights
+        glUniform3f(glGetUniformLocation(shader,"spotLights[0].position"), 0.0f, 8.0f, 0.0f);
+        glUniform3f(glGetUniformLocation(shader,"spotLights[0].color"), 1.0f,1.0f,0.8f);
+        glUniform1f(glGetUniformLocation(shader,"spotLights[0].intensity"), 1.0f);
+        glUniform3f(glGetUniformLocation(shader,"spotLights[1].position"), 10.0f,8.0f,-10.0f);
+        glUniform3f(glGetUniformLocation(shader,"spotLights[1].color"), 1.0f,1.0f,0.8f);
+        glUniform1f(glGetUniformLocation(shader,"spotLights[1].intensity"), 1.0f);
+
+        glUniform3f(glGetUniformLocation(shader,"viewPos"), camX,20,camZ);
+        glUniform1f(glGetUniformLocation(shader,"shininess"), 64.0f);
+
+        for (auto& obj : sceneObjects) {
+            glm::mat4 model=glm::translate(glm::mat4(1.0f), obj.pos);
+            model=glm::rotate(model, glm::radians(obj.rot.x), glm::vec3(1,0,0));
+            model=glm::rotate(model, glm::radians(obj.rot.y), glm::vec3(0,1,0));
+            model=glm::rotate(model, glm::radians(obj.rot.z), glm::vec3(0,0,1));
+            model=glm::scale(model, obj.scale);
+            glUniformMatrix4fv(glGetUniformLocation(shader,"model"),1,GL_FALSE,&model[0][0]);
+            glBindVertexArray(obj.mesh.VAOs[0]);
+            glDrawElements(GL_TRIANGLES, obj.mesh.indexCounts[0], GL_UNSIGNED_INT, 0);
+        }
+
+        // UI
+        if (showUI) {
+            ImGui_ImplOpenGL3_NewFrame();
+            ImGui_ImplGlfw_NewFrame();
+            ImGui::NewFrame();
+
+            ImGui::Begin("Controls");
+            ImGui::Checkbox("Day Mode", &dayMode);
+            ImGui::Checkbox("Show UI", &showUI);
+            ImGui::SliderFloat("Yaw", &yaw, 0, 360);
+            ImGui::SliderFloat("Cam Distance", &radius, 20, 150);
+            ImGui::End();
+
+            ImGui::Begin("Lighting");
+            ImGui::Text("Ambient, Directional, Point, Spot Lights");
+            ImGui::End();
+
+            ImGui::Render();
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        }
+
+        glfwSwapBuffers(window);
+        glfwPollEvents();
+    }
+
+    // Cleanup
+    for (auto& obj : sceneObjects) {
+        for (auto vao : obj.mesh.VAOs) glDeleteVertexArrays(1, &vao);
+        for (auto vbo : obj.mesh.VBOs) glDeleteBuffers(1, &vbo);
+        for (auto ebo : obj.mesh.EBOs) glDeleteBuffers(1, &ebo);
+    }
+    glDeleteProgram(shader);
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+    glfwDestroyWindow(window);
+    glfwTerminate();
+
+    return 0;
+}
+
+
+// Shader compilation
+GLuint compileShader(GLenum type, const char* src) {
     GLuint s=glCreateShader(type);
     glShaderSource(s,1,&src,nullptr);
     glCompileShader(s);
     int success; glGetShaderiv(s,GL_COMPILE_STATUS,&success);
-    if(!success){ char info[512]; glGetShaderInfoLog(s,512,nullptr,info); std::cerr<<"Shader compile error:"<<info<<"\n"; }
+    if(!success){ char info[512]; glGetShaderInfoLog(s,512,nullptr,info); std::cerr<<"Shader error: "<<info<<"\n"; }
     return s;
 }
 
@@ -118,242 +275,214 @@ GLuint createShaderProgram() {
     GLuint prog=glCreateProgram();
     glAttachShader(prog,v); glAttachShader(prog,f);
     glLinkProgram(prog);
+    int success; glGetProgramiv(prog,GL_LINK_STATUS,&success);
+    if(!success){ char info[512]; glGetProgramInfoLog(prog,512,nullptr,info); std::cerr<<"Program link error: "<<info<<"\n"; }
     glDeleteShader(v); glDeleteShader(f);
     return prog;
 }
 
-bool loadTexture(const std::string& path, GLuint& texID) {
-    int w,h,c;
-    unsigned char* data=stbi_load(path.c_str(),&w,&h,&c,0);
-    if(!data){ std::cerr<<"Failed to load: "<<path<<"\n"; return false; }
-    glGenTextures(1,&texID);
-    glBindTexture(GL_TEXTURE_2D,texID);
-    GLenum format=(c==4)?GL_RGBA:GL_RGB;
-    glTexImage2D(GL_TEXTURE_2D,0,format,w,h,0,format,GL_UNSIGNED_BYTE,data);
-    glGenerateMipmap(GL_TEXTURE_2D);
-    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-    stbi_image_free(data);
-    return true;
-}
-
-// Create cube mesh
-Mesh createCubeMesh(GLuint albedoTex, GLuint normalTex) {
+// Create cube geometry procedurally
+Mesh createCubeMesh() {
+    Mesh mesh;
     float vertices[] = {
-        // position         normal          texcoords
-        -0.5f,-0.5f, 0.5f,  0,0,1,         0,0,
-         0.5f,-0.5f, 0.5f,  0,0,1,         1,0,
-         0.5f, 0.5f, 0.5f,  0,0,1,         1,1,
-        -0.5f, 0.5f, 0.5f,  0,0,1,         0,1,
-        // back
-        -0.5f,-0.5f,-0.5f,  0,0,-1,        0,0,
-         0.5f,-0.5f,-0.5f,  0,0,-1,        1,0,
-         0.5f, 0.5f,-0.5f,  0,0,-1,        1,1,
-        -0.5f, 0.5f,-0.5f,  0,0,-1,        0,1,
-        // left
-        -0.5f,-0.5f,-0.5f, -1,0,0,         0,0,
-        -0.5f, 0.5f,-0.5f, -1,0,0,         1,0,
-        -0.5f, 0.5f, 0.5f, -1,0,0,         1,1,
-        -0.5f,-0.5f, 0.5f, -1,0,0,         0,1,
-        // right
-         0.5f,-0.5f,-0.5f,  1,0,0,         0,0,
-         0.5f, 0.5f,-0.5f,  1,0,0,         1,0,
-         0.5f, 0.5f, 0.5f,  1,0,0,         1,1,
-         0.5f,-0.5f, 0.5f,  1,0,0,         0,1,
-        // top
-        -0.5f, 0.5f, 0.5f,  0,1,0,         0,0,
-         0.5f, 0.5f, 0.5f,  0,1,0,         1,0,
-         0.5f, 0.5f,-0.5f,  0,1,0,         1,1,
-        -0.5f, 0.5f,-0.5f,  0,1,0,         0,1,
-        // bottom
-        -0.5f,-0.5f, 0.5f,  0,-1,0,        0,0,
-         0.5f,-0.5f, 0.5f,  0,-1,0,        1,0,
-         0.5f,-0.5f,-0.5f,  0,-1,0,        1,1,
-        -0.5f,-0.5f,-0.5f,  0,-1,0,        0,1,
+        // positions             normals           texcoords
+        // Front face
+        -0.5f,-0.5f, 0.5f,      0,0,1,             0,0,
+         0.5f,-0.5f, 0.5f,      0,0,1,             1,0,
+         0.5f, 0.5f, 0.5f,      0,0,1,             1,1,
+        -0.5f, 0.5f, 0.5f,      0,0,1,             0,1,
+        // Back face
+        -0.5f,-0.5f,-0.5f,      0,0,-1,            0,0,
+         0.5f,-0.5f,-0.5f,      0,0,-1,            1,0,
+         0.5f, 0.5f,-0.5f,      0,0,-1,            1,1,
+        -0.5f, 0.5f,-0.5f,      0,0,-1,            0,1,
+        // Left face
+        -0.5f,-0.5f,-0.5f,     -1,0,0,             0,0,
+        -0.5f, 0.5f,-0.5f,     -1,0,0,             1,0,
+        -0.5f, 0.5f, 0.5f,     -1,0,0,             1,1,
+        -0.5f,-0.5f, 0.5f,     -1,0,0,             0,1,
+        // Right face
+         0.5f,-0.5f,-0.5f,      1,0,0,             0,0,
+         0.5f, 0.5f,-0.5f,      1,0,0,             1,0,
+         0.5f, 0.5f, 0.5f,      1,0,0,             1,1,
+         0.5f,-0.5f, 0.5f,      1,0,0,             0,1,
+        // Top face
+        -0.5f, 0.5f, 0.5f,      0,1,0,             0,0,
+         0.5f, 0.5f, 0.5f,      0,1,0,             1,0,
+         0.5f, 0.5f,-0.5f,      0,1,0,             1,1,
+        -0.5f, 0.5f,-0.5f,      0,1,0,             0,1,
+        // Bottom face
+        -0.5f,-0.5f, 0.5f,      0,-1,0,            0,0,
+         0.5f,-0.5f, 0.5f,      0,-1,0,            1,0,
+         0.5f,-0.5f,-0.5f,      0,-1,0,            1,1,
+        -0.5f,-0.5f,-0.5f,      0,-1,0,            0,1,
     };
+
     unsigned int indices[] = {
-        0,1,2, 2,3,0,
-        4,5,6, 6,7,4,
-        8,9,10,10,11,8,
-        12,13,14,14,15,12,
-        16,17,18,18,19,16,
-        20,21,22,22,23,20
+        0,1,2, 2,3,0,       // front
+        4,5,6, 6,7,4,       // back
+        8,9,10,10,11,8,     // left
+        12,13,14,14,15,12,  // right
+        16,17,18,18,19,16,  // top
+        20,21,22,22,23,20   // bottom
     };
+
     GLuint VAO,VBO,EBO;
     glGenVertexArrays(1,&VAO);
     glGenBuffers(1,&VBO);
     glGenBuffers(1,&EBO);
+
     glBindVertexArray(VAO);
     glBindBuffer(GL_ARRAY_BUFFER,VBO);
     glBufferData(GL_ARRAY_BUFFER,sizeof(vertices),vertices,GL_STATIC_DRAW);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,EBO);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER,sizeof(indices),indices,GL_STATIC_DRAW);
-    // position
-    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,8*sizeof(float),(void*)0);
+
+    int stride=8*sizeof(float);
+    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,stride,(void*)0);
     glEnableVertexAttribArray(0);
-    // normal
-    glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,8*sizeof(float),(void*)(3*sizeof(float)));
+    glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,stride,(void*)(3*sizeof(float)));
     glEnableVertexAttribArray(1);
-    // texcoords
-    glVertexAttribPointer(2,2,GL_FLOAT,GL_FALSE,8*sizeof(float),(void*)(6*sizeof(float)));
+    glVertexAttribPointer(2,2,GL_FLOAT,GL_FALSE,stride,(void*)(6*sizeof(float)));
     glEnableVertexAttribArray(2);
+
     glBindVertexArray(0);
-    return {VAO, VBO, EBO, sizeof(indices)/sizeof(unsigned int), albedoTex, normalTex};
+
+    Mesh mesh;
+    mesh.VAOs.push_back(VAO);
+    mesh.VBOs.push_back(VBO);
+    mesh.EBOs.push_back(EBO);
+    mesh.indexCounts.push_back(sizeof(indices)/sizeof(indices[0]));
+    return mesh;
 }
 
-// Draw mesh with transform
-void drawMesh(const Mesh& mesh, glm::mat4 model) {
-    glUniformMatrix4fv(glGetUniformLocation(shaderProgram,"model"),1,false,&model[0][0]);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, mesh.albedoTex);
-    glUniform1i(glGetUniformLocation(shaderProgram,"albedoMap"),0);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, mesh.normalTex);
-    glUniform1i(glGetUniformLocation(shaderProgram,"normalMap"),1);
-    glBindVertexArray(mesh.VAO);
-    glDrawElements(GL_TRIANGLES, mesh.indexCount, GL_UNSIGNED_INT, 0);
-}
+// Build scene with cubes
+void setupScene(std::vector<SceneObject>& sceneObjects, Mesh& cubeMesh) {
+    // Walls
+    sceneObjects.push_back({cubeMesh, {-50,1.5f,0}, {0,0,0}, {0.2f,3,100}, "Left Wall"});
+    sceneObjects.push_back({cubeMesh, {50,1.5f,0}, {0,0,0}, {0.2f,3,100}, "Right Wall"});
+    sceneObjects.push_back({cubeMesh, {0,1.5f,-50}, {0,0,0}, {100,3,0.2f}, "Front Wall"});
+    sceneObjects.push_back({cubeMesh, {0,1.5f,50}, {0,0,0}, {100,3,0.2f}, "Back Wall"});
 
-// Setup scene objects matching your sketch
-void setupScene() {
-    // Load textures
-    loadTexture("textures/floor.jpg", textures["floor"]);
-    loadTexture("textures/wall.jpg", textures["wall"]);
-    loadTexture("textures/table.jpg", textures["table"]);
-    loadTexture("textures/chair.jpg", textures["chair"]);
-    loadTexture("textures/bar.jpg", textures["bar"]);
-    loadTexture("textures/sofa.jpg", textures["sofa"]);
-    loadTexture("textures/kitchen.jpg", textures["kitchen"]);
-    loadTexture("textures/door.jpg", textures["door"]);
-    loadTexture("textures/window.jpg", textures["window"]);
-    loadTexture("textures/plant.jpg", textures["plant"]);
+    // Partition
+    sceneObjects.push_back({cubeMesh, {0,1.5f,-20}, {0,0,0}, {40,3,0.2f}, "Partition"});
 
-    // Create cube mesh
-    Mesh cubeMesh = createCubeMesh(textures["wall"], textures["wall"]);
+    // Door
+    sceneObjects.push_back({cubeMesh, {-25,1, -50}, {0,0,0}, {3,2,0.2f}, "Main Door"});
 
-    // Walls perimeter (positions)
-    sceneObjects.push_back({cubeMesh, {-50,1.5,0}, {0,0,0}, {0.2,3,100}, "Left Wall"});
-    sceneObjects.push_back({cubeMesh, {50,1.5,0}, {0,0,0}, {0.2,3,100}, "Right Wall"});
-    sceneObjects.push_back({cubeMesh, {0,1.5,-50}, {0,0,0}, {100,3,0.2}, "Front Wall"});
-    sceneObjects.push_back({cubeMesh, {0,1.5,50}, {0,0,0}, {100,3,0.2}, "Back Wall"});
+    // Tables
+    sceneObjects.push_back({cubeMesh, {-15,0.75f,-10}, {0,0,0}, {4,0.75,4}, "Table1"});
+    sceneObjects.push_back({cubeMesh, {0,0.75f,-10}, {0,0,0}, {4,0.75,4}, "Table2"});
+    sceneObjects.push_back({cubeMesh, {15,0.75f,-10}, {0,0,0}, {4,0.75,4}, "Table3"});
 
-    // Internal partition
-    sceneObjects.push_back({cubeMesh, {0,1.5,-20}, {0,0,0}, {40,3,0.2}, "Partition"});
+    // Chairs
+    sceneObjects.push_back({cubeMesh, {-15,0.25f,-10}, {0,0,0}, {1,0.5,1}, "Chair1"});
+    sceneObjects.push_back({cubeMesh, {0,0.25f,-10}, {0,0,0}, {1,0.5,1}, "Chair2"});
+    sceneObjects.push_back({cubeMesh, {15,0.25f,-10}, {0,0,0}, {1,0.5,1}, "Chair3"});
 
-    // Entrance Door
-    sceneObjects.push_back({cubeMesh, {-25,1, -50}, {0,0,0}, {3,2,0.2}, "Main Door"});
+    // Bar
+    sceneObjects.push_back({cubeMesh, {-20,1.5f,3}, {0,0,0}, {6,1.5,2}, "Bar"});
 
-    // Dining Tables
-    sceneObjects.push_back({cubeMesh, {-15,0.75,-10}, {0,0,0}, {4,0.75,4}, "Table1"});
-    sceneObjects.push_back({cubeMesh, {0,0.75,-10}, {0,0,0}, {4,0.75,4}, "Table2"});
-    sceneObjects.push_back({cubeMesh, {15,0.75,-10}, {0,0,0}, {4,0.75,4}, "Table3"});
-
-    // Chairs around tables
-    for(float dx=-1.5; dx<=1.5; dx+=3)
-        for(float dz=-1.5; dz<=1.5; dz+=3)
-            sceneObjects.push_back({cubeMesh, {dx,0.25,dz-10}, {0,0,0}, {1,0.5,1}, "Chair"});
-
-    // Bar area
-    sceneObjects.push_back({cubeMesh, {-20,1.5,3}, {0,0,0}, {6,1.5,2}, "Bar"});
+    // Drop-down counter
+    sceneObjects.push_back({cubeMesh, {-20,1.5f,1}, {0,0,0}, {4,1.5,0.5}, "DropDown"});
 
     // Kitchen
-    sceneObjects.push_back({cubeMesh, {20,1,0}, {0,0,0}, {8,3,4}, "Kitchen Counter"});
-    sceneObjects.push_back({cubeMesh, {20,1.5,2}, {0,0,0}, {2,1.5,2}, "Stove"});
-    sceneObjects.push_back({cubeMesh, {18,1.5,8}, {0,0,0}, {2,1.5,2}, "Fridge"});
+    sceneObjects.push_back({cubeMesh, {20,1.5f,-10}, {0,0,0}, {8,3,4}, "Kitchen"});
 
-    // Lounge (sofas)
-    sceneObjects.push_back({cubeMesh, {30,0.75,20}, {0,0,0}, {4,0.75,2}, "Sofa1"});
-    sceneObjects.push_back({cubeMesh, {35,0.75,20}, {0,0,0}, {4,0.75,2}, "Sofa2"});
-    sceneObjects.push_back({cubeMesh, {32.5,0.25,22}, {0,0,0}, {2,0.25,1}, "CoffeeTable"});
+    // Sofas
+    sceneObjects.push_back({cubeMesh, {30,0.75f,20}, {0,0,0}, {4,0.75,2}, "Sofa1"});
+    sceneObjects.push_back({cubeMesh, {35,0.75f,20}, {0,0,0}, {4,0.75,2}, "Sofa2"});
 
-    // Restroom
-    sceneObjects.push_back({cubeMesh, {-45,1,-45}, {0,0,0}, {3,3,0.2}, "Restroom Wall"});
-    sceneObjects.push_back({cubeMesh, {-45,0.75,-45}, {0,0,0}, {1,0.75,1}, "Toilet"});
-    sceneObjects.push_back({cubeMesh, {-45.5,0.75,-45}, {0,0,0}, {1,0.75,1}, "Sink"});
+    // Coffee table
+    sceneObjects.push_back({cubeMesh, {32.5,0.25f,22}, {0,0,0}, {2,0.25,1}, "CoffeeTable"});
 
-    // Decorations
-    sceneObjects.push_back({cubeMesh, {10,0.5,10}, {0,0,0}, {0.2,0.2,0.2}, "Plant1"});
-    sceneObjects.push_back({cubeMesh, {-10,0.5,-10}, {0,0,0}, {0.2,0.2,0.2}, "Plant2"});
+    // Plants
+    sceneObjects.push_back({cubeMesh, {10,0.5f,10}, {0,0,0}, {0.2f,0.2f,0.2f}, "Plant1"});
+    sceneObjects.push_back({cubeMesh, {-10,0.5f,-10}, {0,0,0}, {0.2f,0.2f,0.2f}, "Plant2"});
 }
 
-// Draw scene objects
-void drawScene(const glm::mat4& view, const glm::mat4& projection) {
-    glUseProgram(shaderProgram);
-    glUniform3f(glGetUniformLocation(shaderProgram,"lightPos"), -10,20,10);
-    glm::vec3 camPos;
-    camPos.x=cos(glm::radians(yaw))*radius;
-    camPos.z=sin(glm::radians(yaw))*radius;
-    camPos.y=20;
-    glUniform3f(glGetUniformLocation(shaderProgram,"viewPos"), camPos.x, camPos.y, camPos.z);
-    glUniformMatrix4fv(glGetUniformLocation(shaderProgram,"view"),1,false,&view[0][0]);
-    glUniformMatrix4fv(glGetUniformLocation(shaderProgram,"projection"),1,false,&projection[0][0]);
+// Draw all objects with lighting
+void drawScene(const std::vector<SceneObject>& sceneObjects, const glm::mat4& view, const glm::mat4& projection) {
+    GLuint shader = glGetIntegerv(GL_CURRENT_PROGRAM);
+    // Setup light uniforms
+    glUniform3f(glGetUniformLocation(shader,"dirLight.position"), 0.0f, 10.0f, 0.0f);
+    glUniform3f(glGetUniformLocation(shader,"dirLight.color"), 1.0f,1.0f,1.0f);
+    glUniform1f(glGetUniformLocation(shader,"dirLight.intensity"), 0.5f);
+    glUniform3f(glGetUniformLocation(shader,"pointLights[0].position"), 5.0f,4.0f,5.0f);
+    glUniform3f(glGetUniformLocation(shader,"pointLights[0].color"), 1.0f,0.8f,0.6f);
+    glUniform1f(glGetUniformLocation(shader,"pointLights[0].intensity"), 0.8f);
+    glUniform3f(glGetUniformLocation(shader,"pointLights[1].position"), -5.0f,4.0f,-5.0f);
+    glUniform3f(glGetUniformLocation(shader,"pointLights[1].color"), 1.0f,0.8f,0.6f);
+    glUniform1f(glGetUniformLocation(shader,"pointLights[1].intensity"), 0.8f);
+    // Spotlights
+    glUniform3f(glGetUniformLocation(shader,"spotLights[0].position"), 0.0f, 8.0f, 0.0f);
+    glUniform3f(glGetUniformLocation(shader,"spotLights[0].color"), 1.0f,1.0f,0.8f);
+    glUniform1f(glGetUniformLocation(shader,"spotLights[0].intensity"), 1.0f);
+    glUniform3f(glGetUniformLocation(shader,"spotLights[1].position"), 10.0f,8.0f,-10.0f);
+    glUniform3f(glGetUniformLocation(shader,"spotLights[1].color"), 1.0f,1.0f,0.8f);
+    glUniform1f(glGetUniformLocation(shader,"spotLights[1].intensity"), 1.0f);
 
-    for(auto& obj: sceneObjects) {
+    // Camera position
+    float camX=cos(glm::radians(yaw))*radius;
+    float camZ=sin(glm::radians(yaw))*radius;
+    glm::vec3 viewPos(camX,20,camZ);
+    glUniform3f(glGetUniformLocation(shader,"viewPos"), viewPos.x, viewPos.y, viewPos.z);
+    glUniform1f(glGetUniformLocation(shader,"shininess"), 64.0f);
+
+    for (const auto& obj : sceneObjects) {
         glm::mat4 model=glm::translate(glm::mat4(1.0f), obj.pos);
         model=glm::rotate(model, glm::radians(obj.rot.x), glm::vec3(1,0,0));
         model=glm::rotate(model, glm::radians(obj.rot.y), glm::vec3(0,1,0));
         model=glm::rotate(model, glm::radians(obj.rot.z), glm::vec3(0,0,1));
         model=glm::scale(model, obj.scale);
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram,"model"),1,false,&model[0][0]);
-        glBindTexture(GL_TEXTURE_2D, textures["wall"]);
-        glBindVertexArray(obj.mesh.VAO);
-        glDrawElements(GL_TRIANGLES, obj.mesh.indexCount, GL_UNSIGNED_INT, 0);
+        glUniformMatrix4fv(glGetUniformLocation(shader,"model"),1,GL_FALSE,&model[0][0]);
+        glBindVertexArray(obj.mesh.VAOs[0]);
+        glDrawElements(GL_TRIANGLES, obj.mesh.indexCounts[0], GL_UNSIGNED_INT, 0);
     }
 }
 
-// Draw labels using ImGui
-void drawLabels() {
-    ImGui::Begin("Labels");
-    ImGui::Text("Main Entrance");
-    ImGui::Text("Lobby");
-    ImGui::Text("Dining Area");
-    ImGui::Text("Bar Area");
-    ImGui::Text("Kitchen");
-    ImGui::Text("Lounge");
-    ImGui::Text("Restroom");
-    ImGui::End();
-}
-
-// Initialize all
 int main() {
-    // GLFW init
-    if (!glfwInit()) { std::cerr << "Failed to init GLFW"; return -1; }
+    // Initialize GLFW
+    if (!glfwInit()) { std::cerr<<"Failed to init GLFW"; return -1; }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);
     glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
-    window=glfwCreateWindow(SCR_WIDTH,SCR_HEIGHT,"Restaurant Sketch Scene",nullptr,nullptr);
-    if (!window){ std::cerr<<"Failed to create window"; glfwTerminate(); return -1; }
+    GLFWwindow* window=glfwCreateWindow(SCR_WIDTH,SCR_HEIGHT,"Cube Scene",nullptr,nullptr);
+    if (!window){ std::cerr<<"Failed to create GLFW"; glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
     glewExperimental=true; glewInit();
 
     // Setup ImGui
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGuiIO& io=ImGui::GetIO();
     ImGui::StyleColorsDark();
     ImGui_ImplGlfw_InitForOpenGL(window,true);
     ImGui_ImplOpenGL3_Init("#version 330");
 
-    // Compile shaders
-    shaderProgram=createShaderProgram();
+    // Compile shader
+    GLuint shader=createShaderProgram();
+    glUseProgram(shader);
 
-    // Setup scene objects
-    setupScene();
+    // Create cube mesh
+    Mesh cubeMesh = createCubeMesh();
 
-    // Enable depth test
+    // Scene objects
+    std::vector<SceneObject> sceneObjects;
+    setupScene(sceneObjects, cubeMesh);
+
     glEnable(GL_DEPTH_TEST);
 
     // Main loop
-    while(!glfwWindowShouldClose(window)){
+    while (!glfwWindowShouldClose(window)) {
         // Input
         if(glfwGetKey(window,GLFW_KEY_ESCAPE)==GLFW_PRESS)
             glfwSetWindowShouldClose(window,true);
 
-        // Camera position
+        // Camera
         float camX=cos(glm::radians(yaw))*radius;
         float camZ=sin(glm::radians(yaw))*radius;
         glm::vec3 camPos(camX,20,camZ);
-        glm::mat4 view=glm::lookAt(camPos, glm::vec3(0,0,0), glm::vec3(0,1,0));
+        glm::mat4 view=glm::lookAt(camPos, glm::vec3(0), glm::vec3(0,1,0));
         glm::mat4 projection=glm::perspective(glm::radians(45.0f),(float)SCR_WIDTH/SCR_HEIGHT,0.1f,200.0f);
 
         // Clear
@@ -362,41 +491,39 @@ int main() {
         glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 
         // Draw scene
-        drawScene(view, projection);
+        drawScene(sceneObjects, view, projection);
 
         // UI
-        if(showUI){
+        if (showUI) {
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
-
-            // Controls
             ImGui::Begin("Controls");
             ImGui::Checkbox("Day Mode", &dayMode);
             ImGui::Checkbox("Show UI", &showUI);
-            ImGui::SliderFloat("Camera Yaw", &yaw, 0, 360);
-            ImGui::SliderFloat("Camera Distance", &radius, 20, 150);
+            ImGui::SliderFloat("Yaw", &yaw, 0, 360);
+            ImGui::SliderFloat("Cam Distance", &radius, 20, 150);
             ImGui::End();
 
-            // Labels
-            drawLabels();
+            ImGui::Begin("Lighting");
+            ImGui::Text("Ambient, Directional, Point, Spot Lights");
+            ImGui::End();
 
             ImGui::Render();
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         }
 
-        // Swap buffers
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
 
     // Cleanup
-    for(auto& obj: sceneObjects){
-        glDeleteVertexArrays(1,&obj.mesh.VAO);
-        glDeleteBuffers(1,&obj.mesh.VBO);
-        glDeleteBuffers(1,&obj.mesh.EBO);
+    for (auto& obj : sceneObjects) {
+        for (auto vao : obj.mesh.VAOs) glDeleteVertexArrays(1, &vao);
+        for (auto vbo : obj.mesh.VBOs) glDeleteBuffers(1, &vbo);
+        for (auto ebo : obj.mesh.EBOs) glDeleteBuffers(1, &ebo);
     }
-    glDeleteProgram(shaderProgram);
+    glDeleteProgram(shader);
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
