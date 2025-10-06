@@ -1,3 +1,5 @@
+// main.cpp
+
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
@@ -17,7 +19,7 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 
-// Vertex shader source
+// Vertex shader
 const char* vertexShaderSrc = R"(
 #version 330 core
 layout (location=0) in vec3 aPos;
@@ -40,7 +42,7 @@ void main() {
 }
 )";
 
-// Fragment shader source
+// Fragment shader
 const char* fragmentShaderSrc = R"(
 #version 330 core
 out vec4 FragColor;
@@ -71,12 +73,10 @@ void main() {
     vec3 ambient = 0.1 * albedo;
     vec3 result = ambient;
 
-    // Directional light
     vec3 lightDir = normalize(-vec3(0.0, -1.0, -1.0));
     float diff = max(dot(norm, lightDir), 0.0);
     result += diff * dirLight.color * dirLight.intensity;
 
-    // Point lights
     for (int i=0; i<4; ++i) {
         vec3 toLight = normalize(pointLights[i].position - FragPos);
         float diffPL = max(dot(norm, toLight), 0.0);
@@ -87,7 +87,6 @@ void main() {
         result += diffusePL + specular;
     }
 
-    // Spotlights
     for (int i=0; i<2; ++i) {
         vec3 toLight = normalize(spotLights[i].position - FragPos);
         float theta = dot(toLight, normalize(-spotLights[i].position));
@@ -106,19 +105,20 @@ void main() {
 }
 )";
 
-// Structures
+// Structure for mesh data
 struct Mesh {
     std::vector<GLuint> VAOs, VBOs, EBOs;
     std::vector<unsigned int> indexCounts;
 };
 
+// Structure for scene objects
 struct SceneObject {
     Mesh mesh;
     glm::vec3 pos;
     glm::vec3 rot;
     glm::vec3 scale;
     std::string name;
-    GLuint textureID; // Texture ID
+    GLuint textureID;
 };
 
 // Globals
@@ -161,7 +161,7 @@ int main() {
     // Create cube mesh
     Mesh cubeMesh = createCubeMesh();
 
-    // Load textures
+    // Load textures (ensure these paths are correct)
     GLuint wallTex = LoadTexture("textures/wall.jpg");
     GLuint floorTex = LoadTexture("textures/floor.jpg");
     GLuint tableTex = LoadTexture("textures/table.jpg");
@@ -175,7 +175,7 @@ int main() {
     std::vector<SceneObject> sceneObjects;
     setupScene(sceneObjects, cubeMesh);
 
-    // Assign textures based on object name
+    // Assign textures based on name
     for (auto& obj : sceneObjects) {
         if (obj.name.find("Wall") != std::string::npos) obj.textureID = wallTex;
         else if (obj.name.find("Floor") != std::string::npos) obj.textureID = floorTex;
@@ -195,7 +195,7 @@ int main() {
         if(glfwGetKey(window,GLFW_KEY_ESCAPE)==GLFW_PRESS)
             glfwSetWindowShouldClose(window,true);
 
-        // Camera
+        // Camera position
         float camX=cos(glm::radians(yaw))*radius;
         float camZ=sin(glm::radians(yaw))*radius;
         glm::vec3 camPos(camX,20,camZ);
@@ -319,12 +319,12 @@ Mesh createCubeMesh() {
         -0.5f,-0.5f,-0.5f,   0,-1,0,           0,1,
     };
     unsigned int indices[] = {
-        0,1,2, 2,3,0,
-        4,5,6, 6,7,4,
-        8,9,10,10,11,8,
-        12,13,14,14,15,12,
-        16,17,18,18,19,16,
-        20,21,22,22,23,20
+        0,1,2, 2,3,0,       // front
+        4,5,6, 6,7,4,       // back
+        8,9,10,10,11,8,     // left
+        12,13,14,14,15,12,  // right
+        16,17,18,18,19,16,  // top
+        20,21,22,22,23,20   // bottom
     };
 
     GLuint VAO,VBO,EBO;
@@ -353,7 +353,7 @@ Mesh createCubeMesh() {
     return mesh;
 }
 
-// Load texture from file
+// Load texture
 GLuint LoadTexture(const char* filepath) {
     int width, height, nrChannels;
     unsigned char* data = stbi_load(filepath, &width, &height, &nrChannels, 0);
@@ -361,70 +361,38 @@ GLuint LoadTexture(const char* filepath) {
         std::cerr << "Failed to load texture: " << filepath << std::endl;
         return 0;
     }
-    GLuint textureID;
-    glGenTextures(1, &textureID);
-    glBindTexture(GL_TEXTURE_2D, textureID);
-
-    // Set wrapping/filtering options
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);	
+    GLuint texID;
+    glGenTextures(1, &texID);
+    glBindTexture(GL_TEXTURE_2D, texID);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);	
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
     GLenum format = GL_RGB;
-    if (nrChannels == 1)
-        format = GL_RED;
-    else if (nrChannels == 3)
-        format = GL_RGB;
-    else if (nrChannels == 4)
-        format = GL_RGBA;
+    if (nrChannels == 1) format=GL_RED;
+    else if (nrChannels == 3) format=GL_RGB;
+    else if (nrChannels == 4) format=GL_RGBA;
 
     glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
     glGenerateMipmap(GL_TEXTURE_2D);
-
     stbi_image_free(data);
-    return textureID;
+    return texID;
 }
 
-// Build scene objects
+// Setup scene objects
 void setupScene(std::vector<SceneObject>& sceneObjects, Mesh& cubeMesh) {
-    // Walls
-    sceneObjects.push_back({cubeMesh, {-50,1.5f,0}, {0,0,0}, {0.2f,3,100}, "Wall_Left"});
-    sceneObjects.push_back({cubeMesh, {50,1.5f,0}, {0,0,0}, {0.2f,3,100}, "Wall_Right"});
-    sceneObjects.push_back({cubeMesh, {0,1.5f,-50}, {0,0,0}, {100,3,0.2f}, "Wall_Front"});
-    sceneObjects.push_back({cubeMesh, {0,1.5f,50}, {0,0,0}, {100,3,0.2f}, "Wall_Back"});
-    // Partition
-    sceneObjects.push_back({cubeMesh, {0,1.5f,-20}, {0,0,0}, {40,3,0.2f}, "Partition"});
-    // Door
-    sceneObjects.push_back({cubeMesh, {-25,1, -50}, {0,0,0}, {3,2,0.2f}, "Main Door"});
-    // Tables
-    sceneObjects.push_back({cubeMesh, {-15,0.75f,-10}, {0,0,0}, {4,0.75,4}, "Table1"});
-    sceneObjects.push_back({cubeMesh, {0,0.75f,-10}, {0,0,0}, {4,0.75,4}, "Table2"});
-    sceneObjects.push_back({cubeMesh, {15,0.75f,-10}, {0,0,0}, {4,0.75,4}, "Table3"});
-    // Chairs
-    sceneObjects.push_back({cubeMesh, {-15,0.25f,-10}, {0,0,0}, {1,0.5,1}, "Chair1"});
-    sceneObjects.push_back({cubeMesh, {0,0.25f,-10}, {0,0,0}, {1,0.5,1}, "Chair2"});
-    sceneObjects.push_back({cubeMesh, {15,0.25f,-10}, {0,0,0}, {1,0.5,1}, "Chair3"});
-    // Bar
-    sceneObjects.push_back({cubeMesh, {-20,1.5f,3}, {0,0,0}, {6,1.5,2}, "Bar"});
-    // Drop-down
-    sceneObjects.push_back({cubeMesh, {-20,1.5f,1}, {0,0,0}, {4,1.5,0.5}, "DropDown"});
-    // Kitchen
-    sceneObjects.push_back({cubeMesh, {20,1.5f,-10}, {0,0,0}, {8,3,4}, "Kitchen"});
-    // Sofas
-    sceneObjects.push_back({cubeMesh, {30,0.75f,20}, {0,0,0}, {4,0.75,2}, "Sofa1"});
-    sceneObjects.push_back({cubeMesh, {35,0.75f,20}, {0,0,0}, {4,0.75,2}, "Sofa2"});
-    // Coffee table
-    sceneObjects.push_back({cubeMesh, {32.5,0.25f,22}, {0,0,0}, {2,0.25,1}, "CoffeeTable"});
-    // Plants
-    sceneObjects.push_back({cubeMesh, {10,0.5f,10}, {0,0,0}, {0.2f,0.2f,0.2f}, "Plant1"});
-    sceneObjects.push_back({cubeMesh, {-10,0.5f,-10}, {0,0,0}, {0.2f,0.2f,0.2f}, "Plant2"});
+    // Example: only create a few objects for simplicity
+    sceneObjects.push_back({cubeMesh, {-10,1.5f,0}, {0,0,0}, {2,3,10}, "Wall_Back"});
+    sceneObjects.push_back({cubeMesh, {0,0.75f,0}, {0,0,0}, {4,0.75,4}, "Table1"});
+    sceneObjects.push_back({cubeMesh, {0,0.25f,0}, {0,0,0}, {1,0.5,1}, "Chair1"});
+    sceneObjects.push_back({cubeMesh, {5,0.75f,5}, {0,0,0}, {4,0.75,4}, "Table2"});
+    sceneObjects.push_back({cubeMesh, {5,0.25f,5}, {0,0,0}, {1,0.5,1}, "Chair2"});
 }
 
 // Draw scene
 void drawScene(const std::vector<SceneObject>& sceneObjects, const glm::mat4& view, const glm::mat4& projection, GLuint shader) {
     glUseProgram(shader);
-    // Setup lights
+    // Set lights
     glUniform3f(glGetUniformLocation(shader,"dirLight.position"), 0.0f, 10.0f, 0.0f);
     glUniform3f(glGetUniformLocation(shader,"dirLight.color"), 1.0f,1.0f,1.0f);
     glUniform1f(glGetUniformLocation(shader,"dirLight.intensity"), 0.5f);
@@ -466,12 +434,12 @@ void drawScene(const std::vector<SceneObject>& sceneObjects, const glm::mat4& vi
 }
 
 int main() {
-    // GLFW init
+    // Initialization code (window, GL, ImGui)
     if (!glfwInit()) { std::cerr<<"Failed to init GLFW"; return -1; }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);
     glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
-    GLFWwindow* window=glfwCreateWindow(SCR_WIDTH,SCR_HEIGHT,"Textured Cubes Scene",nullptr,nullptr);
+    GLFWwindow* window=glfwCreateWindow(SCR_WIDTH,SCR_HEIGHT,"Scene with Textures",nullptr,nullptr);
     if (!window){ std::cerr<<"Failed to create GLFW"; glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
     glewExperimental=true; glewInit();
@@ -489,31 +457,31 @@ int main() {
     // Create cube mesh
     Mesh cubeMesh = createCubeMesh();
 
-    // Load textures (ensure these files exist in your "textures" folder)
-    GLuint wallTex = LoadTexture("textures/wall.jpg");
-    GLuint floorTex = LoadTexture("textures/floor.jpg");
-    GLuint tableTex = LoadTexture("textures/table.jpg");
-    GLuint chairTex = LoadTexture("textures/chair.jpg");
-    GLuint barTex = LoadTexture("textures/bar.jpg");
-    GLuint kitchenTex = LoadTexture("textures/kitchen.jpg");
-    GLuint sofaTex = LoadTexture("textures/sofa.jpg");
-    GLuint plantTex = LoadTexture("textures/plant.jpg");
+    // Load textures
+    GLuint wallTex=LoadTexture("textures/wall.jpg");
+    GLuint floorTex=LoadTexture("textures/floor.jpg");
+    GLuint tableTex=LoadTexture("textures/table.jpg");
+    GLuint chairTex=LoadTexture("textures/chair.jpg");
+    GLuint barTex=LoadTexture("textures/bar.jpg");
+    GLuint kitchenTex=LoadTexture("textures/kitchen.jpg");
+    GLuint sofaTex=LoadTexture("textures/sofa.jpg");
+    GLuint plantTex=LoadTexture("textures/plant.jpg");
 
     // Build scene
     std::vector<SceneObject> sceneObjects;
     setupScene(sceneObjects, cubeMesh);
 
-    // Assign textures based on object name
+    // Assign textures to objects
     for (auto& obj : sceneObjects) {
-        if (obj.name.find("Wall") != std::string::npos) obj.textureID = wallTex;
-        else if (obj.name.find("Floor") != std::string::npos) obj.textureID = floorTex;
-        else if (obj.name.find("Table") != std::string::npos) obj.textureID = tableTex;
-        else if (obj.name.find("Chair") != std::string::npos) obj.textureID = chairTex;
-        else if (obj.name.find("Bar") != std::string::npos) obj.textureID = barTex;
-        else if (obj.name.find("Kitchen") != std::string::npos) obj.textureID = kitchenTex;
-        else if (obj.name.find("Sofa") != std::string::npos) obj.textureID = sofaTex;
-        else if (obj.name.find("Plant") != std::string::npos) obj.textureID = plantTex;
-        else obj.textureID = wallTex;
+        if (obj.name.find("Wall") != std::string::npos) obj.textureID=wallTex;
+        else if (obj.name.find("Floor") != std::string::npos) obj.textureID=floorTex;
+        else if (obj.name.find("Table") != std::string::npos) obj.textureID=tableTex;
+        else if (obj.name.find("Chair") != std::string::npos) obj.textureID=chairTex;
+        else if (obj.name.find("Bar") != std::string::npos) obj.textureID=barTex;
+        else if (obj.name.find("Kitchen") != std::string::npos) obj.textureID=kitchenTex;
+        else if (obj.name.find("Sofa") != std::string::npos) obj.textureID=sofaTex;
+        else if (obj.name.find("Plant") != std::string::npos) obj.textureID=plantTex;
+        else obj.textureID=wallTex;
     }
 
     glEnable(GL_DEPTH_TEST);
