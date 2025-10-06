@@ -15,10 +15,6 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
-#include "imgui.h"
-#include "imgui_impl_glfw.h"
-#include "imgui_impl_opengl3.h"
-
 // Vertex shader
 const char* vertexShaderSrc = R"(
 #version 330 core
@@ -73,6 +69,7 @@ void main() {
     vec3 ambient = 0.1 * albedo;
     vec3 result = ambient;
 
+    // Directional light
     vec3 lightDir = normalize(-vec3(0.0, -1.0, -1.0));
     float diff = max(dot(norm, lightDir), 0.0);
     result += diff * dirLight.color * dirLight.intensity;
@@ -105,13 +102,12 @@ void main() {
 }
 )";
 
-// Structure for mesh data
+// Structures
 struct Mesh {
     std::vector<GLuint> VAOs, VBOs, EBOs;
     std::vector<unsigned int> indexCounts;
 };
 
-// Structure for scene objects
 struct SceneObject {
     Mesh mesh;
     glm::vec3 pos;
@@ -125,7 +121,6 @@ struct SceneObject {
 GLFWwindow* window;
 unsigned int SCR_WIDTH=1280, SCR_HEIGHT=720;
 float yaw=45.0f, radius=80.0f;
-bool showUI=true;
 bool dayMode=true;
 GLuint shaderProgram;
 
@@ -143,59 +138,50 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);
     glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
-    GLFWwindow* window=glfwCreateWindow(SCR_WIDTH,SCR_HEIGHT,"Textured Cubes Scene",nullptr,nullptr);
+    GLFWwindow* window=glfwCreateWindow(SCR_WIDTH,SCR_HEIGHT,"Scene with Textures",nullptr,nullptr);
     if (!window){ std::cerr<<"Failed to create GLFW"; glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
     glewExperimental=true; glewInit();
 
-    // Setup ImGui
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGui::StyleColorsDark();
-    ImGui_ImplGlfw_InitForOpenGL(window,true);
-    ImGui_ImplOpenGL3_Init("#version 330");
-
-    // Compile shader
+    // Setup
     GLuint shader=createShaderProgram();
 
-    // Create cube mesh
     Mesh cubeMesh = createCubeMesh();
 
-    // Load textures (ensure these paths are correct)
-    GLuint wallTex = LoadTexture("textures/wall.jpg");
-    GLuint floorTex = LoadTexture("textures/floor.jpg");
-    GLuint tableTex = LoadTexture("textures/table.jpg");
-    GLuint chairTex = LoadTexture("textures/chair.jpg");
-    GLuint barTex = LoadTexture("textures/bar.jpg");
-    GLuint kitchenTex = LoadTexture("textures/kitchen.jpg");
-    GLuint sofaTex = LoadTexture("textures/sofa.jpg");
-    GLuint plantTex = LoadTexture("textures/plant.jpg");
+    // Load textures - replace paths with your actual images
+    GLuint wallTex=LoadTexture("textures/wall.jpg");
+    GLuint floorTex=LoadTexture("textures/floor.jpg");
+    GLuint tableTex=LoadTexture("textures/table.jpg");
+    GLuint chairTex=LoadTexture("textures/chair.jpg");
+    GLuint barTex=LoadTexture("textures/bar.jpg");
+    GLuint kitchenTex=LoadTexture("textures/kitchen.jpg");
+    GLuint sofaTex=LoadTexture("textures/sofa.jpg");
+    GLuint plantTex=LoadTexture("textures/plant.jpg");
 
     // Build scene
     std::vector<SceneObject> sceneObjects;
     setupScene(sceneObjects, cubeMesh);
 
-    // Assign textures based on name
+    // Assign textures based on object name
     for (auto& obj : sceneObjects) {
-        if (obj.name.find("Wall") != std::string::npos) obj.textureID = wallTex;
-        else if (obj.name.find("Floor") != std::string::npos) obj.textureID = floorTex;
-        else if (obj.name.find("Table") != std::string::npos) obj.textureID = tableTex;
-        else if (obj.name.find("Chair") != std::string::npos) obj.textureID = chairTex;
-        else if (obj.name.find("Bar") != std::string::npos) obj.textureID = barTex;
-        else if (obj.name.find("Kitchen") != std::string::npos) obj.textureID = kitchenTex;
-        else if (obj.name.find("Sofa") != std::string::npos) obj.textureID = sofaTex;
-        else if (obj.name.find("Plant") != std::string::npos) obj.textureID = plantTex;
-        else obj.textureID = wallTex;
+        if (obj.name.find("Wall") != std::string::npos) obj.textureID=wallTex;
+        else if (obj.name.find("Floor") != std::string::npos) obj.textureID=floorTex;
+        else if (obj.name.find("Table") != std::string::npos) obj.textureID=tableTex;
+        else if (obj.name.find("Chair") != std::string::npos) obj.textureID=chairTex;
+        else if (obj.name.find("Bar") != std::string::npos) obj.textureID=barTex;
+        else if (obj.name.find("Kitchen") != std::string::npos) obj.textureID=kitchenTex;
+        else if (obj.name.find("Sofa") != std::string::npos) obj.textureID=sofaTex;
+        else if (obj.name.find("Plant") != std::string::npos) obj.textureID=plantTex;
+        else obj.textureID=wallTex;
     }
 
     glEnable(GL_DEPTH_TEST);
 
-    // Main loop
     while (!glfwWindowShouldClose(window)){
         if(glfwGetKey(window,GLFW_KEY_ESCAPE)==GLFW_PRESS)
             glfwSetWindowShouldClose(window,true);
 
-        // Camera position
+        // Camera
         float camX=cos(glm::radians(yaw))*radius;
         float camZ=sin(glm::radians(yaw))*radius;
         glm::vec3 camPos(camX,20,camZ);
@@ -210,26 +196,7 @@ int main() {
         // Draw scene
         drawScene(sceneObjects, view, projection, shader);
 
-        // UI
-        if (showUI) {
-            ImGui_ImplOpenGL3_NewFrame();
-            ImGui_ImplGlfw_NewFrame();
-            ImGui::NewFrame();
-
-            ImGui::Begin("Controls");
-            ImGui::Checkbox("Day Mode", &dayMode);
-            ImGui::Checkbox("Show UI", &showUI);
-            ImGui::SliderFloat("Yaw", &yaw, 0, 360);
-            ImGui::SliderFloat("Cam Distance", &radius, 20, 150);
-            ImGui::End();
-
-            ImGui::Begin("Lighting");
-            ImGui::Text("Ambient, Directional, Point, Spot Lights");
-            ImGui::End();
-
-            ImGui::Render();
-            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-        }
+        // No UI, so skip ImGui code
 
         glfwSwapBuffers(window);
         glfwPollEvents();
@@ -242,10 +209,6 @@ int main() {
         for (auto ebo : obj.mesh.EBOs) glDeleteBuffers(1, &ebo);
     }
     glDeleteProgram(shader);
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
-    ImGui::DestroyContext();
-
     glfwDestroyWindow(window);
     glfwTerminate();
 
@@ -287,32 +250,26 @@ Mesh createCubeMesh() {
     Mesh mesh;
     float vertices[] = {
         // positions          normals           texcoords
-        // Front face
         -0.5f,-0.5f, 0.5f,   0,0,1,            0,0,
          0.5f,-0.5f, 0.5f,   0,0,1,            1,0,
          0.5f, 0.5f, 0.5f,   0,0,1,            1,1,
         -0.5f, 0.5f, 0.5f,   0,0,1,            0,1,
-        // Back face
         -0.5f,-0.5f,-0.5f,   0,0,-1,           0,0,
          0.5f,-0.5f,-0.5f,   0,0,-1,           1,0,
          0.5f, 0.5f,-0.5f,   0,0,-1,           1,1,
         -0.5f, 0.5f,-0.5f,   0,0,-1,           0,1,
-        // Left face
         -0.5f,-0.5f,-0.5f,  -1,0,0,            0,0,
         -0.5f, 0.5f,-0.5f,  -1,0,0,            1,0,
         -0.5f, 0.5f, 0.5f,  -1,0,0,            1,1,
         -0.5f,-0.5f, 0.5f,  -1,0,0,            0,1,
-        // Right face
-         0.5f,-0.5f,-0.5f,   1,0,0,            0,0,
-         0.5f, 0.5f,-0.5f,   1,0,0,            1,0,
-         0.5f, 0.5f, 0.5f,   1,0,0,            1,1,
-         0.5f,-0.5f, 0.5f,   1,0,0,            0,1,
-        // Top face
+        0.5f,-0.5f,-0.5f,   1,0,0,            0,0,
+        0.5f, 0.5f,-0.5f,   1,0,0,            1,0,
+        0.5f, 0.5f, 0.5f,   1,0,0,            1,1,
+        0.5f,-0.5f, 0.5f,   1,0,0,            0,1,
         -0.5f, 0.5f, 0.5f,   0,1,0,            0,0,
          0.5f, 0.5f, 0.5f,   0,1,0,            1,0,
          0.5f, 0.5f,-0.5f,   0,1,0,            1,1,
         -0.5f, 0.5f,-0.5f,   0,1,0,            0,1,
-        // Bottom face
         -0.5f,-0.5f, 0.5f,   0,-1,0,           0,0,
          0.5f,-0.5f, 0.5f,   0,-1,0,           1,0,
          0.5f,-0.5f,-0.5f,   0,-1,0,           1,1,
@@ -381,7 +338,7 @@ GLuint LoadTexture(const char* filepath) {
 
 // Setup scene objects
 void setupScene(std::vector<SceneObject>& sceneObjects, Mesh& cubeMesh) {
-    // Example: only create a few objects for simplicity
+    // Example: a few objects
     sceneObjects.push_back({cubeMesh, {-10,1.5f,0}, {0,0,0}, {2,3,10}, "Wall_Back"});
     sceneObjects.push_back({cubeMesh, {0,0.75f,0}, {0,0,0}, {4,0.75,4}, "Table1"});
     sceneObjects.push_back({cubeMesh, {0,0.25f,0}, {0,0,0}, {1,0.5,1}, "Chair1"});
@@ -392,7 +349,7 @@ void setupScene(std::vector<SceneObject>& sceneObjects, Mesh& cubeMesh) {
 // Draw scene
 void drawScene(const std::vector<SceneObject>& sceneObjects, const glm::mat4& view, const glm::mat4& projection, GLuint shader) {
     glUseProgram(shader);
-    // Set lights
+    // Setup lights
     glUniform3f(glGetUniformLocation(shader,"dirLight.position"), 0.0f, 10.0f, 0.0f);
     glUniform3f(glGetUniformLocation(shader,"dirLight.color"), 1.0f,1.0f,1.0f);
     glUniform1f(glGetUniformLocation(shader,"dirLight.intensity"), 0.5f);
@@ -413,8 +370,8 @@ void drawScene(const std::vector<SceneObject>& sceneObjects, const glm::mat4& vi
     // Camera
     float camX=cos(glm::radians(yaw))*radius;
     float camZ=sin(glm::radians(yaw))*radius;
-    glm::vec3 viewPos(camX,20,camZ);
-    glUniform3f(glGetUniformLocation(shader,"viewPos"), viewPos.x, viewPos.y, viewPos.z);
+    glm::vec3 camPos(camX,20,camZ);
+    glUniform3f(glGetUniformLocation(shader,"viewPos"), camPos.x, camPos.y, camPos.z);
     glUniform1f(glGetUniformLocation(shader,"shininess"), 64.0f);
 
     for (const auto& obj : sceneObjects) {
@@ -433,8 +390,9 @@ void drawScene(const std::vector<SceneObject>& sceneObjects, const glm::mat4& vi
     }
 }
 
+// Entry point
 int main() {
-    // Initialization code (window, GL, ImGui)
+    // GLFW init
     if (!glfwInit()) { std::cerr<<"Failed to init GLFW"; return -1; }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);
@@ -444,20 +402,13 @@ int main() {
     glfwMakeContextCurrent(window);
     glewExperimental=true; glewInit();
 
-    // Setup ImGui
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGui::StyleColorsDark();
-    ImGui_ImplGlfw_InitForOpenGL(window,true);
-    ImGui_ImplOpenGL3_Init("#version 330");
-
-    // Compile shader
+    // Shader setup
     GLuint shader=createShaderProgram();
 
-    // Create cube mesh
+    // Mesh
     Mesh cubeMesh = createCubeMesh();
 
-    // Load textures
+    // Textures - replace with your actual image paths
     GLuint wallTex=LoadTexture("textures/wall.jpg");
     GLuint floorTex=LoadTexture("textures/floor.jpg");
     GLuint tableTex=LoadTexture("textures/table.jpg");
@@ -469,9 +420,14 @@ int main() {
 
     // Build scene
     std::vector<SceneObject> sceneObjects;
-    setupScene(sceneObjects, cubeMesh);
+    // Example objects
+    sceneObjects.push_back({cubeMesh, {-10,1.5f,0}, {0,0,0}, {2,3,10}, "Wall_Back"});
+    sceneObjects.push_back({cubeMesh, {0,0.75f,0}, {0,0,0}, {4,0.75,4}, "Table1"});
+    sceneObjects.push_back({cubeMesh, {0,0.25f,0}, {0,0,0}, {1,0.5,1}, "Chair1"});
+    sceneObjects.push_back({cubeMesh, {5,0.75f,5}, {0,0,0}, {4,0.75,4}, "Table2"});
+    sceneObjects.push_back({cubeMesh, {5,0.25f,5}, {0,0,0}, {1,0.5,1}, "Chair2"});
 
-    // Assign textures to objects
+    // Assign textures
     for (auto& obj : sceneObjects) {
         if (obj.name.find("Wall") != std::string::npos) obj.textureID=wallTex;
         else if (obj.name.find("Floor") != std::string::npos) obj.textureID=floorTex;
@@ -486,7 +442,6 @@ int main() {
 
     glEnable(GL_DEPTH_TEST);
 
-    // Main loop
     while (!glfwWindowShouldClose(window)){
         if(glfwGetKey(window,GLFW_KEY_ESCAPE)==GLFW_PRESS)
             glfwSetWindowShouldClose(window,true);
@@ -506,26 +461,7 @@ int main() {
         // Draw scene
         drawScene(sceneObjects, view, projection, shader);
 
-        // UI
-        if (showUI) {
-            ImGui_ImplOpenGL3_NewFrame();
-            ImGui_ImplGlfw_NewFrame();
-            ImGui::NewFrame();
-
-            ImGui::Begin("Controls");
-            ImGui::Checkbox("Day Mode", &dayMode);
-            ImGui::Checkbox("Show UI", &showUI);
-            ImGui::SliderFloat("Yaw", &yaw, 0, 360);
-            ImGui::SliderFloat("Cam Distance", &radius, 20, 150);
-            ImGui::End();
-
-            ImGui::Begin("Lighting");
-            ImGui::Text("Ambient, Directional, Point, Spot Lights");
-            ImGui::End();
-
-            ImGui::Render();
-            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-        }
+        // No UI, so skip ImGui code
 
         glfwSwapBuffers(window);
         glfwPollEvents();
@@ -538,10 +474,6 @@ int main() {
         for (auto ebo : obj.mesh.EBOs) glDeleteBuffers(1, &ebo);
     }
     glDeleteProgram(shader);
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
-    ImGui::DestroyContext();
-
     glfwDestroyWindow(window);
     glfwTerminate();
     return 0;
