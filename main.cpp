@@ -17,7 +17,7 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 
-// Vertex shader
+// Vertex shader source
 const char* vertexShaderSrc = R"(
 #version 330 core
 layout (location=0) in vec3 aPos;
@@ -40,7 +40,7 @@ void main() {
 }
 )";
 
-// Fragment shader
+// Fragment shader source
 const char* fragmentShaderSrc = R"(
 #version 330 core
 out vec4 FragColor;
@@ -52,7 +52,6 @@ in vec2 TexCoord;
 uniform vec3 viewPos;
 uniform sampler2D albedoMap;
 
-// Lighting
 struct Light {
     vec3 position;
     vec3 color;
@@ -107,7 +106,7 @@ void main() {
 }
 )";
 
-// Data structures
+// Structures
 struct Mesh {
     std::vector<GLuint> VAOs, VBOs, EBOs;
     std::vector<unsigned int> indexCounts;
@@ -119,7 +118,7 @@ struct SceneObject {
     glm::vec3 rot;
     glm::vec3 scale;
     std::string name;
-    GLuint textureID; // Texture for this object
+    GLuint textureID; // Texture ID
 };
 
 // Globals
@@ -136,15 +135,15 @@ GLuint createShaderProgram();
 Mesh createCubeMesh();
 GLuint LoadTexture(const char* filepath);
 void setupScene(std::vector<SceneObject>& sceneObjects, Mesh& cubeMesh);
-void drawScene(const std::vector<SceneObject>& sceneObjects, const glm::mat4& view, const glm::mat4& projection);
+void drawScene(const std::vector<SceneObject>& sceneObjects, const glm::mat4& view, const glm::mat4& projection, GLuint shader);
 
 int main() {
-    // GLFW init
+    // Initialize GLFW
     if (!glfwInit()) { std::cerr<<"Failed to init GLFW"; return -1; }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);
     glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
-    GLFWwindow* window=glfwCreateWindow(SCR_WIDTH,SCR_HEIGHT,"Scene with Textured Cubes",nullptr,nullptr);
+    GLFWwindow* window=glfwCreateWindow(SCR_WIDTH,SCR_HEIGHT,"Textured Cubes Scene",nullptr,nullptr);
     if (!window){ std::cerr<<"Failed to create GLFW"; glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
     glewExperimental=true; glewInit();
@@ -158,47 +157,45 @@ int main() {
 
     // Compile shader
     GLuint shader=createShaderProgram();
-    glUseProgram(shader);
 
     // Create cube mesh
     Mesh cubeMesh = createCubeMesh();
 
     // Load textures
-    GLuint wallTexture = LoadTexture("textures/wall.jpg");
-    GLuint floorTexture = LoadTexture("textures/floor.jpg");
-    GLuint tableTexture = LoadTexture("textures/table.jpg");
-    GLuint chairTexture = LoadTexture("textures/chair.jpg");
-    GLuint barTexture = LoadTexture("textures/bar.jpg");
-    GLuint kitchenTexture = LoadTexture("textures/kitchen.jpg");
-    GLuint sofaTexture = LoadTexture("textures/sofa.jpg");
-    GLuint plantTexture = LoadTexture("textures/plant.jpg");
+    GLuint wallTex = LoadTexture("textures/wall.jpg");
+    GLuint floorTex = LoadTexture("textures/floor.jpg");
+    GLuint tableTex = LoadTexture("textures/table.jpg");
+    GLuint chairTex = LoadTexture("textures/chair.jpg");
+    GLuint barTex = LoadTexture("textures/bar.jpg");
+    GLuint kitchenTex = LoadTexture("textures/kitchen.jpg");
+    GLuint sofaTex = LoadTexture("textures/sofa.jpg");
+    GLuint plantTex = LoadTexture("textures/plant.jpg");
 
-    // Build scene with textured cubes
+    // Build scene
     std::vector<SceneObject> sceneObjects;
     setupScene(sceneObjects, cubeMesh);
 
-    // Assign textures to objects based on their name
+    // Assign textures based on object name
     for (auto& obj : sceneObjects) {
-        if (obj.name.find("Wall") != std::string::npos) obj.textureID = wallTexture;
-        else if (obj.name.find("Floor") != std::string::npos) obj.textureID = floorTexture;
-        else if (obj.name.find("Table") != std::string::npos) obj.textureID = tableTexture;
-        else if (obj.name.find("Chair") != std::string::npos) obj.textureID = chairTexture;
-        else if (obj.name.find("Bar") != std::string::npos) obj.textureID = barTexture;
-        else if (obj.name.find("Kitchen") != std::string::npos) obj.textureID = kitchenTexture;
-        else if (obj.name.find("Sofa") != std::string::npos) obj.textureID = sofaTexture;
-        else if (obj.name.find("Plant") != std::string::npos) obj.textureID = plantTexture;
-        else obj.textureID = wallTexture; // default fallback
+        if (obj.name.find("Wall") != std::string::npos) obj.textureID = wallTex;
+        else if (obj.name.find("Floor") != std::string::npos) obj.textureID = floorTex;
+        else if (obj.name.find("Table") != std::string::npos) obj.textureID = tableTex;
+        else if (obj.name.find("Chair") != std::string::npos) obj.textureID = chairTex;
+        else if (obj.name.find("Bar") != std::string::npos) obj.textureID = barTex;
+        else if (obj.name.find("Kitchen") != std::string::npos) obj.textureID = kitchenTex;
+        else if (obj.name.find("Sofa") != std::string::npos) obj.textureID = sofaTex;
+        else if (obj.name.find("Plant") != std::string::npos) obj.textureID = plantTex;
+        else obj.textureID = wallTex;
     }
 
     glEnable(GL_DEPTH_TEST);
 
     // Main loop
     while (!glfwWindowShouldClose(window)){
-        // Input
         if(glfwGetKey(window,GLFW_KEY_ESCAPE)==GLFW_PRESS)
             glfwSetWindowShouldClose(window,true);
 
-        // Camera position
+        // Camera
         float camX=cos(glm::radians(yaw))*radius;
         float camZ=sin(glm::radians(yaw))*radius;
         glm::vec3 camPos(camX,20,camZ);
@@ -211,45 +208,7 @@ int main() {
         glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 
         // Draw scene
-        glUseProgram(shader);
-        // Set lights
-        glUniform3f(glGetUniformLocation(shader,"dirLight.position"), 0.0f, 10.0f, 0.0f);
-        glUniform3f(glGetUniformLocation(shader,"dirLight.color"), 1.0f,1.0f,1.0f);
-        glUniform1f(glGetUniformLocation(shader,"dirLight.intensity"), 0.5f);
-        glUniform3f(glGetUniformLocation(shader,"pointLights[0].position"), 5.0f,4.0f,5.0f);
-        glUniform3f(glGetUniformLocation(shader,"pointLights[0].color"), 1.0f,0.8f,0.6f);
-        glUniform1f(glGetUniformLocation(shader,"pointLights[0].intensity"), 0.8f);
-        glUniform3f(glGetUniformLocation(shader,"pointLights[1].position"), -5.0f,4.0f,-5.0f);
-        glUniform3f(glGetUniformLocation(shader,"pointLights[1].color"), 1.0f,0.8f,0.6f);
-        glUniform1f(glGetUniformLocation(shader,"pointLights[1].intensity"), 0.8f);
-        // Spotlights
-        glUniform3f(glGetUniformLocation(shader,"spotLights[0].position"), 0.0f, 8.0f, 0.0f);
-        glUniform3f(glGetUniformLocation(shader,"spotLights[0].color"), 1.0f,1.0f,0.8f);
-        glUniform1f(glGetUniformLocation(shader,"spotLights[0].intensity"), 1.0f);
-        glUniform3f(glGetUniformLocation(shader,"spotLights[1].position"), 10.0f,8.0f,-10.0f);
-        glUniform3f(glGetUniformLocation(shader,"spotLights[1].color"), 1.0f,1.0f,0.8f);
-        glUniform1f(glGetUniformLocation(shader,"spotLights[1].intensity"), 1.0f);
-
-        glUniform3f(glGetUniformLocation(shader,"viewPos"), camX,20,camZ);
-        glUniform1f(glGetUniformLocation(shader,"shininess"), 64.0f);
-
-        // Draw objects
-        for (const auto& obj : sceneObjects) {
-            glm::mat4 model=glm::translate(glm::mat4(1.0f), obj.pos);
-            model=glm::rotate(model, glm::radians(obj.rot.x), glm::vec3(1,0,0));
-            model=glm::rotate(model, glm::radians(obj.rot.y), glm::vec3(0,1,0));
-            model=glm::rotate(model, glm::radians(obj.rot.z), glm::vec3(0,0,1));
-            model=glm::scale(model, obj.scale);
-            glUniformMatrix4fv(glGetUniformLocation(shader,"model"),1,GL_FALSE,&model[0][0]);
-
-            // Bind texture
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, obj.textureID);
-            glUniform1i(glGetUniformLocation(shader, "albedoMap"), 0);
-
-            glBindVertexArray(obj.mesh.VAOs[0]);
-            glDrawElements(GL_TRIANGLES, obj.mesh.indexCounts[0], GL_UNSIGNED_INT, 0);
-        }
+        drawScene(sceneObjects, view, projection, shader);
 
         // UI
         if (showUI) {
@@ -286,6 +245,7 @@ int main() {
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
+
     glfwDestroyWindow(window);
     glfwTerminate();
 
@@ -294,63 +254,70 @@ int main() {
 
 // Shader compilation
 GLuint compileShader(GLenum type, const char* src) {
-    GLuint s=glCreateShader(type);
-    glShaderSource(s,1,&src,nullptr);
-    glCompileShader(s);
-    int success; glGetShaderiv(s,GL_COMPILE_STATUS,&success);
-    if(!success){ char info[512]; glGetShaderInfoLog(s,512,nullptr,info); std::cerr<<"Shader error: "<<info<<"\n"; }
-    return s;
+    GLuint shader=glCreateShader(type);
+    glShaderSource(shader, 1, &src, nullptr);
+    glCompileShader(shader);
+    int success; glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        char info[512]; glGetShaderInfoLog(shader, 512, nullptr, info);
+        std::cerr << "Shader compile error:\n" << info << std::endl;
+    }
+    return shader;
 }
 
 GLuint createShaderProgram() {
-    GLuint v=compileShader(GL_VERTEX_SHADER,vertexShaderSrc);
-    GLuint f=compileShader(GL_FRAGMENT_SHADER,fragmentShaderSrc);
-    GLuint prog=glCreateProgram();
-    glAttachShader(prog,v); glAttachShader(prog,f);
-    glLinkProgram(prog);
-    int success; glGetProgramiv(prog,GL_LINK_STATUS,&success);
-    if(!success){ char info[512]; glGetProgramInfoLog(prog,512,nullptr,info); std::cerr<<"Program link error: "<<info<<"\n"; }
-    glDeleteShader(v); glDeleteShader(f);
-    return prog;
+    GLuint v=compileShader(GL_VERTEX_SHADER, vertexShaderSrc);
+    GLuint f=compileShader(GL_FRAGMENT_SHADER, fragmentShaderSrc);
+    GLuint program=glCreateProgram();
+    glAttachShader(program, v);
+    glAttachShader(program, f);
+    glLinkProgram(program);
+    int success; glGetProgramiv(program, GL_LINK_STATUS, &success);
+    if (!success) {
+        char info[512]; glGetProgramInfoLog(program, 512, nullptr, info);
+        std::cerr << "Program link error:\n" << info << std::endl;
+    }
+    glDeleteShader(v);
+    glDeleteShader(f);
+    return program;
 }
 
 // Create cube geometry
 Mesh createCubeMesh() {
     Mesh mesh;
     float vertices[] = {
-        // positions             normals           texcoords
+        // positions          normals           texcoords
         // Front face
-        -0.5f,-0.5f, 0.5f,      0,0,1,             0,0,
-         0.5f,-0.5f, 0.5f,      0,0,1,             1,0,
-         0.5f, 0.5f, 0.5f,      0,0,1,             1,1,
-        -0.5f, 0.5f, 0.5f,      0,0,1,             0,1,
+        -0.5f,-0.5f, 0.5f,   0,0,1,            0,0,
+         0.5f,-0.5f, 0.5f,   0,0,1,            1,0,
+         0.5f, 0.5f, 0.5f,   0,0,1,            1,1,
+        -0.5f, 0.5f, 0.5f,   0,0,1,            0,1,
         // Back face
-        -0.5f,-0.5f,-0.5f,      0,0,-1,            0,0,
-         0.5f,-0.5f,-0.5f,      0,0,-1,            1,0,
-         0.5f, 0.5f,-0.5f,      0,0,-1,            1,1,
-        -0.5f, 0.5f,-0.5f,      0,0,-1,            0,1,
+        -0.5f,-0.5f,-0.5f,   0,0,-1,           0,0,
+         0.5f,-0.5f,-0.5f,   0,0,-1,           1,0,
+         0.5f, 0.5f,-0.5f,   0,0,-1,           1,1,
+        -0.5f, 0.5f,-0.5f,   0,0,-1,           0,1,
         // Left face
-        -0.5f,-0.5f,-0.5f,     -1,0,0,             0,0,
-        -0.5f, 0.5f,-0.5f,     -1,0,0,             1,0,
-        -0.5f, 0.5f, 0.5f,     -1,0,0,             1,1,
-        -0.5f,-0.5f, 0.5f,     -1,0,0,             0,1,
+        -0.5f,-0.5f,-0.5f,  -1,0,0,            0,0,
+        -0.5f, 0.5f,-0.5f,  -1,0,0,            1,0,
+        -0.5f, 0.5f, 0.5f,  -1,0,0,            1,1,
+        -0.5f,-0.5f, 0.5f,  -1,0,0,            0,1,
         // Right face
-         0.5f,-0.5f,-0.5f,      1,0,0,             0,0,
-         0.5f, 0.5f,-0.5f,      1,0,0,             1,0,
-         0.5f, 0.5f, 0.5f,      1,0,0,             1,1,
-         0.5f,-0.5f, 0.5f,      1,0,0,             0,1,
+         0.5f,-0.5f,-0.5f,   1,0,0,            0,0,
+         0.5f, 0.5f,-0.5f,   1,0,0,            1,0,
+         0.5f, 0.5f, 0.5f,   1,0,0,            1,1,
+         0.5f,-0.5f, 0.5f,   1,0,0,            0,1,
         // Top face
-        -0.5f, 0.5f, 0.5f,      0,1,0,             0,0,
-         0.5f, 0.5f, 0.5f,      0,1,0,             1,0,
-         0.5f, 0.5f,-0.5f,      0,1,0,             1,1,
-        -0.5f, 0.5f,-0.5f,      0,1,0,             0,1,
+        -0.5f, 0.5f, 0.5f,   0,1,0,            0,0,
+         0.5f, 0.5f, 0.5f,   0,1,0,            1,0,
+         0.5f, 0.5f,-0.5f,   0,1,0,            1,1,
+        -0.5f, 0.5f,-0.5f,   0,1,0,            0,1,
         // Bottom face
-        -0.5f,-0.5f, 0.5f,      0,-1,0,            0,0,
-         0.5f,-0.5f, 0.5f,      0,-1,0,            1,0,
-         0.5f,-0.5f,-0.5f,      0,-1,0,            1,1,
-        -0.5f,-0.5f,-0.5f,      0,-1,0,            0,1,
+        -0.5f,-0.5f, 0.5f,   0,-1,0,           0,0,
+         0.5f,-0.5f, 0.5f,   0,-1,0,           1,0,
+         0.5f,-0.5f,-0.5f,   0,-1,0,           1,1,
+        -0.5f,-0.5f,-0.5f,   0,-1,0,           0,1,
     };
-
     unsigned int indices[] = {
         0,1,2, 2,3,0,
         4,5,6, 6,7,4,
@@ -414,60 +381,50 @@ GLuint LoadTexture(const char* filepath) {
 
     glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
     glGenerateMipmap(GL_TEXTURE_2D);
-    stbi_image_free(data);
 
+    stbi_image_free(data);
     return textureID;
 }
 
-// Set up scene objects with positions, rotations, scales
+// Build scene objects
 void setupScene(std::vector<SceneObject>& sceneObjects, Mesh& cubeMesh) {
     // Walls
     sceneObjects.push_back({cubeMesh, {-50,1.5f,0}, {0,0,0}, {0.2f,3,100}, "Wall_Left"});
     sceneObjects.push_back({cubeMesh, {50,1.5f,0}, {0,0,0}, {0.2f,3,100}, "Wall_Right"});
     sceneObjects.push_back({cubeMesh, {0,1.5f,-50}, {0,0,0}, {100,3,0.2f}, "Wall_Front"});
     sceneObjects.push_back({cubeMesh, {0,1.5f,50}, {0,0,0}, {100,3,0.2f}, "Wall_Back"});
-
     // Partition
     sceneObjects.push_back({cubeMesh, {0,1.5f,-20}, {0,0,0}, {40,3,0.2f}, "Partition"});
-
-    // Main door
+    // Door
     sceneObjects.push_back({cubeMesh, {-25,1, -50}, {0,0,0}, {3,2,0.2f}, "Main Door"});
-
     // Tables
     sceneObjects.push_back({cubeMesh, {-15,0.75f,-10}, {0,0,0}, {4,0.75,4}, "Table1"});
     sceneObjects.push_back({cubeMesh, {0,0.75f,-10}, {0,0,0}, {4,0.75,4}, "Table2"});
     sceneObjects.push_back({cubeMesh, {15,0.75f,-10}, {0,0,0}, {4,0.75,4}, "Table3"});
-
     // Chairs
     sceneObjects.push_back({cubeMesh, {-15,0.25f,-10}, {0,0,0}, {1,0.5,1}, "Chair1"});
     sceneObjects.push_back({cubeMesh, {0,0.25f,-10}, {0,0,0}, {1,0.5,1}, "Chair2"});
     sceneObjects.push_back({cubeMesh, {15,0.25f,-10}, {0,0,0}, {1,0.5,1}, "Chair3"});
-
     // Bar
     sceneObjects.push_back({cubeMesh, {-20,1.5f,3}, {0,0,0}, {6,1.5,2}, "Bar"});
-
-    // Drop-down counter
+    // Drop-down
     sceneObjects.push_back({cubeMesh, {-20,1.5f,1}, {0,0,0}, {4,1.5,0.5}, "DropDown"});
-
     // Kitchen
     sceneObjects.push_back({cubeMesh, {20,1.5f,-10}, {0,0,0}, {8,3,4}, "Kitchen"});
-
     // Sofas
     sceneObjects.push_back({cubeMesh, {30,0.75f,20}, {0,0,0}, {4,0.75,2}, "Sofa1"});
     sceneObjects.push_back({cubeMesh, {35,0.75f,20}, {0,0,0}, {4,0.75,2}, "Sofa2"});
-
     // Coffee table
     sceneObjects.push_back({cubeMesh, {32.5,0.25f,22}, {0,0,0}, {2,0.25,1}, "CoffeeTable"});
-
     // Plants
     sceneObjects.push_back({cubeMesh, {10,0.5f,10}, {0,0,0}, {0.2f,0.2f,0.2f}, "Plant1"});
     sceneObjects.push_back({cubeMesh, {-10,0.5f,-10}, {0,0,0}, {0.2f,0.2f,0.2f}, "Plant2"});
 }
 
-// Draw scene with textures and lighting
-void drawScene(const std::vector<SceneObject>& sceneObjects, const glm::mat4& view, const glm::mat4& projection) {
-    GLuint shader = glGetIntegerv(GL_CURRENT_PROGRAM);
-    // Set lights
+// Draw scene
+void drawScene(const std::vector<SceneObject>& sceneObjects, const glm::mat4& view, const glm::mat4& projection, GLuint shader) {
+    glUseProgram(shader);
+    // Setup lights
     glUniform3f(glGetUniformLocation(shader,"dirLight.position"), 0.0f, 10.0f, 0.0f);
     glUniform3f(glGetUniformLocation(shader,"dirLight.color"), 1.0f,1.0f,1.0f);
     glUniform1f(glGetUniformLocation(shader,"dirLight.intensity"), 0.5f);
@@ -492,7 +449,6 @@ void drawScene(const std::vector<SceneObject>& sceneObjects, const glm::mat4& vi
     glUniform3f(glGetUniformLocation(shader,"viewPos"), viewPos.x, viewPos.y, viewPos.z);
     glUniform1f(glGetUniformLocation(shader,"shininess"), 64.0f);
 
-    // Draw objects
     for (const auto& obj : sceneObjects) {
         glm::mat4 model=glm::translate(glm::mat4(1.0f), obj.pos);
         model=glm::rotate(model, glm::radians(obj.rot.x), glm::vec3(1,0,0));
@@ -529,43 +485,41 @@ int main() {
 
     // Compile shader
     GLuint shader=createShaderProgram();
-    glUseProgram(shader);
 
     // Create cube mesh
     Mesh cubeMesh = createCubeMesh();
 
-    // Load textures
-    GLuint wallTexture = LoadTexture("textures/wall.jpg");
-    GLuint floorTexture = LoadTexture("textures/floor.jpg");
-    GLuint tableTexture = LoadTexture("textures/table.jpg");
-    GLuint chairTexture = LoadTexture("textures/chair.jpg");
-    GLuint barTexture = LoadTexture("textures/bar.jpg");
-    GLuint kitchenTexture = LoadTexture("textures/kitchen.jpg");
-    GLuint sofaTexture = LoadTexture("textures/sofa.jpg");
-    GLuint plantTexture = LoadTexture("textures/plant.jpg");
+    // Load textures (ensure these files exist in your "textures" folder)
+    GLuint wallTex = LoadTexture("textures/wall.jpg");
+    GLuint floorTex = LoadTexture("textures/floor.jpg");
+    GLuint tableTex = LoadTexture("textures/table.jpg");
+    GLuint chairTex = LoadTexture("textures/chair.jpg");
+    GLuint barTex = LoadTexture("textures/bar.jpg");
+    GLuint kitchenTex = LoadTexture("textures/kitchen.jpg");
+    GLuint sofaTex = LoadTexture("textures/sofa.jpg");
+    GLuint plantTex = LoadTexture("textures/plant.jpg");
 
-    // Build scene with textured cubes
+    // Build scene
     std::vector<SceneObject> sceneObjects;
     setupScene(sceneObjects, cubeMesh);
 
-    // Assign textures based on name
+    // Assign textures based on object name
     for (auto& obj : sceneObjects) {
-        if (obj.name.find("Wall") != std::string::npos) obj.textureID = wallTexture;
-        else if (obj.name.find("Floor") != std::string::npos) obj.textureID = floorTexture;
-        else if (obj.name.find("Table") != std::string::npos) obj.textureID = tableTexture;
-        else if (obj.name.find("Chair") != std::string::npos) obj.textureID = chairTexture;
-        else if (obj.name.find("Bar") != std::string::npos) obj.textureID = barTexture;
-        else if (obj.name.find("Kitchen") != std::string::npos) obj.textureID = kitchenTexture;
-        else if (obj.name.find("Sofa") != std::string::npos) obj.textureID = sofaTexture;
-        else if (obj.name.find("Plant") != std::string::npos) obj.textureID = plantTexture;
-        else obj.textureID = wallTexture; // fallback
+        if (obj.name.find("Wall") != std::string::npos) obj.textureID = wallTex;
+        else if (obj.name.find("Floor") != std::string::npos) obj.textureID = floorTex;
+        else if (obj.name.find("Table") != std::string::npos) obj.textureID = tableTex;
+        else if (obj.name.find("Chair") != std::string::npos) obj.textureID = chairTex;
+        else if (obj.name.find("Bar") != std::string::npos) obj.textureID = barTex;
+        else if (obj.name.find("Kitchen") != std::string::npos) obj.textureID = kitchenTex;
+        else if (obj.name.find("Sofa") != std::string::npos) obj.textureID = sofaTex;
+        else if (obj.name.find("Plant") != std::string::npos) obj.textureID = plantTex;
+        else obj.textureID = wallTex;
     }
 
     glEnable(GL_DEPTH_TEST);
 
     // Main loop
     while (!glfwWindowShouldClose(window)){
-        // Input
         if(glfwGetKey(window,GLFW_KEY_ESCAPE)==GLFW_PRESS)
             glfwSetWindowShouldClose(window,true);
 
@@ -582,7 +536,7 @@ int main() {
         glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 
         // Draw scene
-        drawScene(sceneObjects, view, projection);
+        drawScene(sceneObjects, view, projection, shader);
 
         // UI
         if (showUI) {
@@ -620,5 +574,7 @@ int main() {
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
 
+    glfwDestroyWindow(window);
+    glfwTerminate();
     return 0;
 }
