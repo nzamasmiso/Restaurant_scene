@@ -117,11 +117,14 @@ struct SceneObject {
     GLuint textureID;
 };
 
+// Camera parameters
+float cameraDistance = 50.0f;
+float cameraYaw = 45.0f;
+float cameraPitch = -20.0f;
+
 // Globals
 GLFWwindow* window;
 unsigned int SCR_WIDTH=1280, SCR_HEIGHT=720;
-float yaw=45.0f, radius=80.0f;
-bool dayMode=true;
 GLuint shaderProgram;
 
 // Function prototypes
@@ -131,24 +134,27 @@ Mesh createCubeMesh();
 GLuint LoadTexture(const char* filepath);
 void setupScene(std::vector<SceneObject>& sceneObjects, Mesh& cubeMesh);
 void drawScene(const std::vector<SceneObject>& sceneObjects, const glm::mat4& view, const glm::mat4& projection, GLuint shader);
+void processInput(GLFWwindow* window);
 
+// Main
 int main() {
-    // Initialize GLFW
+    // Init GLFW
     if (!glfwInit()) { std::cerr<<"Failed to init GLFW"; return -1; }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);
     glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
-    GLFWwindow* window=glfwCreateWindow(SCR_WIDTH,SCR_HEIGHT,"Scene with Textures",nullptr,nullptr);
+    window=glfwCreateWindow(SCR_WIDTH,SCR_HEIGHT,"Crowded Restaurant Scene",nullptr,nullptr);
     if (!window){ std::cerr<<"Failed to create GLFW"; glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
     glewExperimental=true; glewInit();
 
-    // Setup
+    // Shader
     GLuint shader=createShaderProgram();
 
+    // Mesh
     Mesh cubeMesh = createCubeMesh();
 
-    // Load textures - replace paths with your actual images
+    // Textures (replace paths with your images)
     GLuint wallTex=LoadTexture("textures/wall.jpg");
     GLuint floorTex=LoadTexture("textures/floor.jpg");
     GLuint tableTex=LoadTexture("textures/table.jpg");
@@ -158,11 +164,11 @@ int main() {
     GLuint sofaTex=LoadTexture("textures/sofa.jpg");
     GLuint plantTex=LoadTexture("textures/plant.jpg");
 
-    // Build scene
+    // Build scene with many objects
     std::vector<SceneObject> sceneObjects;
     setupScene(sceneObjects, cubeMesh);
 
-    // Assign textures based on object name
+    // Assign textures based on object names
     for (auto& obj : sceneObjects) {
         if (obj.name.find("Wall") != std::string::npos) obj.textureID=wallTex;
         else if (obj.name.find("Floor") != std::string::npos) obj.textureID=floorTex;
@@ -177,26 +183,24 @@ int main() {
 
     glEnable(GL_DEPTH_TEST);
 
+    // Main loop
     while (!glfwWindowShouldClose(window)){
-        if(glfwGetKey(window,GLFW_KEY_ESCAPE)==GLFW_PRESS)
-            glfwSetWindowShouldClose(window,true);
+        processInput(window);
 
-        // Camera
-        float camX=cos(glm::radians(yaw))*radius;
-        float camZ=sin(glm::radians(yaw))*radius;
-        glm::vec3 camPos(camX,20,camZ);
-        glm::mat4 view=glm::lookAt(camPos, glm::vec3(0), glm::vec3(0,1,0));
+        // Camera position with mouse control optional
+        float camX = cameraDistance * cos(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
+        float camY = cameraDistance * sin(glm::radians(cameraPitch));
+        float camZ = cameraDistance * sin(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
+        glm::vec3 cameraPos(camX, camY, camZ);
+        glm::mat4 view=glm::lookAt(cameraPos, glm::vec3(0), glm::vec3(0,1,0));
         glm::mat4 projection=glm::perspective(glm::radians(45.0f),(float)SCR_WIDTH/SCR_HEIGHT,0.1f,200.0f);
 
         // Clear
-        if(dayMode) glClearColor(0.5f,0.8f,1.0f,1);
-        else glClearColor(0.1f,0.1f,0.2f,1);
+        if(true) glClearColor(0.5f,0.8f,1.0f,1);
         glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
 
         // Draw scene
         drawScene(sceneObjects, view, projection, shader);
-
-        // No UI, so skip ImGui code
 
         glfwSwapBuffers(window);
         glfwPollEvents();
@@ -211,41 +215,49 @@ int main() {
     glDeleteProgram(shader);
     glfwDestroyWindow(window);
     glfwTerminate();
-
     return 0;
 }
 
-// Shader compilation
+// Input handling
+void processInput(GLFWwindow* window){
+    if (glfwGetKey(window, GLFW_KEY_ESCAPE)==GLFW_PRESS)
+        glfwSetWindowShouldClose(window, true);
+    // Camera controls
+    if (glfwGetKey(window, GLFW_KEY_W)==GLFW_PRESS)
+        cameraDistance -= 0.5f;
+    if (glfwGetKey(window, GLFW_KEY_S)==GLFW_PRESS)
+        cameraDistance += 0.5f;
+    if (glfwGetKey(window, GLFW_KEY_A)==GLFW_PRESS)
+        cameraYaw -= 1;
+    if (glfwGetKey(window, GLFW_KEY_D)==GLFW_PRESS)
+        cameraYaw += 1;
+    if (cameraDistance<10) cameraDistance=10;
+    if (cameraDistance>150) cameraDistance=150;
+}
+
+// Shader functions
 GLuint compileShader(GLenum type, const char* src) {
-    GLuint shader=glCreateShader(type);
-    glShaderSource(shader, 1, &src, nullptr);
-    glCompileShader(shader);
-    int success; glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-    if (!success) {
-        char info[512]; glGetShaderInfoLog(shader, 512, nullptr, info);
-        std::cerr << "Shader compile error:\n" << info << std::endl;
-    }
-    return shader;
+    GLuint s=glCreateShader(type);
+    glShaderSource(s,1,&src,nullptr);
+    glCompileShader(s);
+    int success; glGetShaderiv(s,GL_COMPILE_STATUS,&success);
+    if (!success){ char info[512]; glGetShaderInfoLog(s,512,nullptr,info); std::cerr<<"Shader error: "<<info<<"\n"; }
+    return s;
 }
 
 GLuint createShaderProgram() {
-    GLuint v=compileShader(GL_VERTEX_SHADER, vertexShaderSrc);
-    GLuint f=compileShader(GL_FRAGMENT_SHADER, fragmentShaderSrc);
-    GLuint program=glCreateProgram();
-    glAttachShader(program, v);
-    glAttachShader(program, f);
-    glLinkProgram(program);
-    int success; glGetProgramiv(program, GL_LINK_STATUS, &success);
-    if (!success) {
-        char info[512]; glGetProgramInfoLog(program, 512, nullptr, info);
-        std::cerr << "Program link error:\n" << info << std::endl;
-    }
-    glDeleteShader(v);
-    glDeleteShader(f);
-    return program;
+    GLuint v=compileShader(GL_VERTEX_SHADER,vertexShaderSrc);
+    GLuint f=compileShader(GL_FRAGMENT_SHADER,fragmentShaderSrc);
+    GLuint prog=glCreateProgram();
+    glAttachShader(prog,v); glAttachShader(prog,f);
+    glLinkProgram(prog);
+    int success; glGetProgramiv(prog,GL_LINK_STATUS,&success);
+    if (!success){ char info[512]; glGetProgramInfoLog(prog,512,nullptr,info); std::cerr<<"Link error: "<<info<<"\n"; }
+    glDeleteShader(v); glDeleteShader(f);
+    return prog;
 }
 
-// Create cube geometry
+// Create cube mesh
 Mesh createCubeMesh() {
     Mesh mesh;
     float vertices[] = {
@@ -276,12 +288,12 @@ Mesh createCubeMesh() {
         -0.5f,-0.5f,-0.5f,   0,-1,0,           0,1,
     };
     unsigned int indices[] = {
-        0,1,2, 2,3,0,       // front
-        4,5,6, 6,7,4,       // back
-        8,9,10,10,11,8,     // left
-        12,13,14,14,15,12,  // right
-        16,17,18,18,19,16,  // top
-        20,21,22,22,23,20   // bottom
+        0,1,2, 2,3,0,
+        4,5,6, 6,7,4,
+        8,9,10,10,11,8,
+        12,13,14,14,15,12,
+        16,17,18,18,19,16,
+        20,21,22,22,23,20
     };
 
     GLuint VAO,VBO,EBO;
@@ -336,145 +348,51 @@ GLuint LoadTexture(const char* filepath) {
     return texID;
 }
 
-// Setup scene objects
+// Setup scene with many objects
 void setupScene(std::vector<SceneObject>& sceneObjects, Mesh& cubeMesh) {
-    // Example: a few objects
-    sceneObjects.push_back({cubeMesh, {-10,1.5f,0}, {0,0,0}, {2,3,10}, "Wall_Back"});
-    sceneObjects.push_back({cubeMesh, {0,0.75f,0}, {0,0,0}, {4,0.75,4}, "Table1"});
-    sceneObjects.push_back({cubeMesh, {0,0.25f,0}, {0,0,0}, {1,0.5,1}, "Chair1"});
-    sceneObjects.push_back({cubeMesh, {5,0.75f,5}, {0,0,0}, {4,0.75,4}, "Table2"});
-    sceneObjects.push_back({cubeMesh, {5,0.25f,5}, {0,0,0}, {1,0.5,1}, "Chair2"});
-}
+    sceneObjects.clear();
 
-// Draw scene
-void drawScene(const std::vector<SceneObject>& sceneObjects, const glm::mat4& view, const glm::mat4& projection, GLuint shader) {
-    glUseProgram(shader);
-    // Setup lights
-    glUniform3f(glGetUniformLocation(shader,"dirLight.position"), 0.0f, 10.0f, 0.0f);
-    glUniform3f(glGetUniformLocation(shader,"dirLight.color"), 1.0f,1.0f,1.0f);
-    glUniform1f(glGetUniformLocation(shader,"dirLight.intensity"), 0.5f);
-    glUniform3f(glGetUniformLocation(shader,"pointLights[0].position"), 5.0f,4.0f,5.0f);
-    glUniform3f(glGetUniformLocation(shader,"pointLights[0].color"), 1.0f,0.8f,0.6f);
-    glUniform1f(glGetUniformLocation(shader,"pointLights[0].intensity"), 0.8f);
-    glUniform3f(glGetUniformLocation(shader,"pointLights[1].position"), -5.0f,4.0f,-5.0f);
-    glUniform3f(glGetUniformLocation(shader,"pointLights[1].color"), 1.0f,0.8f,0.6f);
-    glUniform1f(glGetUniformLocation(shader,"pointLights[1].intensity"), 0.8f);
-    // Spotlights
-    glUniform3f(glGetUniformLocation(shader,"spotLights[0].position"), 0.0f, 8.0f, 0.0f);
-    glUniform3f(glGetUniformLocation(shader,"spotLights[0].color"), 1.0f,1.0f,0.8f);
-    glUniform1f(glGetUniformLocation(shader,"spotLights[0].intensity"), 1.0f);
-    glUniform3f(glGetUniformLocation(shader,"spotLights[1].position"), 10.0f,8.0f,-10.0f);
-    glUniform3f(glGetUniformLocation(shader,"spotLights[1].color"), 1.0f,1.0f,0.8f);
-    glUniform1f(glGetUniformLocation(shader,"spotLights[1].intensity"), 1.0f);
+    // Floor
+    sceneObjects.push_back({cubeMesh, {0,-0.01f,0}, {0,0,0}, {50,0.02,50}, "Floor"});
 
-    // Camera
-    float camX=cos(glm::radians(yaw))*radius;
-    float camZ=sin(glm::radians(yaw))*radius;
-    glm::vec3 camPos(camX,20,camZ);
-    glUniform3f(glGetUniformLocation(shader,"viewPos"), camPos.x, camPos.y, camPos.z);
-    glUniform1f(glGetUniformLocation(shader,"shininess"), 64.0f);
+    // Walls
+    sceneObjects.push_back({cubeMesh, {0,2.5f,-25}, {0,0,0}, {50,5,0.2}, "Wall_Back"});
+    sceneObjects.push_back({cubeMesh, {0,2.5f,25}, {0,0,0}, {50,5,0.2}, "Wall_Front"});
+    sceneObjects.push_back({cubeMesh, {-25,2.5f,0}, {0,0,0}, {0.2,5,50}, "Wall_Left"});
+    sceneObjects.push_back({cubeMesh, {25,2.5f,0}, {0,0,0}, {0.2,5,50}, "Wall_Right"});
 
-    for (const auto& obj : sceneObjects) {
-        glm::mat4 model=glm::translate(glm::mat4(1.0f), obj.pos);
-        model=glm::rotate(model, glm::radians(obj.rot.x), glm::vec3(1,0,0));
-        model=glm::rotate(model, glm::radians(obj.rot.y), glm::vec3(0,1,0));
-        model=glm::rotate(model, glm::radians(obj.rot.z), glm::vec3(0,0,1));
-        model=glm::scale(model, obj.scale);
-        glUniformMatrix4fv(glGetUniformLocation(shader,"model"),1,GL_FALSE,&model[0][0]);
-        // Bind texture
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, obj.textureID);
-        glUniform1i(glGetUniformLocation(shader, "albedoMap"), 0);
-        glBindVertexArray(obj.mesh.VAOs[0]);
-        glDrawElements(GL_TRIANGLES, obj.mesh.indexCounts[0], GL_UNSIGNED_INT, 0);
-    }
-}
-
-// Entry point
-int main() {
-    // GLFW init
-    if (!glfwInit()) { std::cerr<<"Failed to init GLFW"; return -1; }
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
-    GLFWwindow* window=glfwCreateWindow(SCR_WIDTH,SCR_HEIGHT,"Scene with Textures",nullptr,nullptr);
-    if (!window){ std::cerr<<"Failed to create GLFW"; glfwTerminate(); return -1; }
-    glfwMakeContextCurrent(window);
-    glewExperimental=true; glewInit();
-
-    // Shader setup
-    GLuint shader=createShaderProgram();
-
-    // Mesh
-    Mesh cubeMesh = createCubeMesh();
-
-    // Textures - replace with your actual image paths
-    GLuint wallTex=LoadTexture("textures/wall.jpg");
-    GLuint floorTex=LoadTexture("textures/floor.jpg");
-    GLuint tableTex=LoadTexture("textures/table.jpg");
-    GLuint chairTex=LoadTexture("textures/chair.jpg");
-    GLuint barTex=LoadTexture("textures/bar.jpg");
-    GLuint kitchenTex=LoadTexture("textures/kitchen.jpg");
-    GLuint sofaTex=LoadTexture("textures/sofa.jpg");
-    GLuint plantTex=LoadTexture("textures/plant.jpg");
-
-    // Build scene
-    std::vector<SceneObject> sceneObjects;
-    // Example objects
-    sceneObjects.push_back({cubeMesh, {-10,1.5f,0}, {0,0,0}, {2,3,10}, "Wall_Back"});
-    sceneObjects.push_back({cubeMesh, {0,0.75f,0}, {0,0,0}, {4,0.75,4}, "Table1"});
-    sceneObjects.push_back({cubeMesh, {0,0.25f,0}, {0,0,0}, {1,0.5,1}, "Chair1"});
-    sceneObjects.push_back({cubeMesh, {5,0.75f,5}, {0,0,0}, {4,0.75,4}, "Table2"});
-    sceneObjects.push_back({cubeMesh, {5,0.25f,5}, {0,0,0}, {1,0.5,1}, "Chair2"});
-
-    // Assign textures
-    for (auto& obj : sceneObjects) {
-        if (obj.name.find("Wall") != std::string::npos) obj.textureID=wallTex;
-        else if (obj.name.find("Floor") != std::string::npos) obj.textureID=floorTex;
-        else if (obj.name.find("Table") != std::string::npos) obj.textureID=tableTex;
-        else if (obj.name.find("Chair") != std::string::npos) obj.textureID=chairTex;
-        else if (obj.name.find("Bar") != std::string::npos) obj.textureID=barTex;
-        else if (obj.name.find("Kitchen") != std::string::npos) obj.textureID=kitchenTex;
-        else if (obj.name.find("Sofa") != std::string::npos) obj.textureID=sofaTex;
-        else if (obj.name.find("Plant") != std::string::npos) obj.textureID=plantTex;
-        else obj.textureID=wallTex;
+    // Multiple Tables with chairs - spread across the room
+    float startX = -18;
+    float startZ = -12;
+    int rows=4, cols=4;
+    float spacingX=12, spacingZ=8;
+    for(int i=0; i<rows; ++i){
+        for(int j=0; j<cols; ++j){
+            float x = startX + i*spacingX;
+            float z = startZ + j*spacingZ;
+            // Table
+            sceneObjects.push_back({cubeMesh, {x,0.75f,z}, {0,0,0}, {3,0.75,3}, "Table"});
+            // Chairs at four corners
+            sceneObjects.push_back({cubeMesh, {x-1.5f,0.25f,z-1.5f}, {0,0,0}, {1,0.5,1}, "Chair"});
+            sceneObjects.push_back({cubeMesh, {x+1.5f,0.25f,z-1.5f}, {0,0,0}, {1,0.5,1}, "Chair"});
+            sceneObjects.push_back({cubeMesh, {x-1.5f,0.25f,z+1.5f}, {0,0,0}, {1,0.5,1}, "Chair"});
+            sceneObjects.push_back({cubeMesh, {x+1.5f,0.25f,z+1.5f}, {0,0,0}, {1,0.5,1}, "Chair"});
+        }
     }
 
-    glEnable(GL_DEPTH_TEST);
-
-    while (!glfwWindowShouldClose(window)){
-        if(glfwGetKey(window,GLFW_KEY_ESCAPE)==GLFW_PRESS)
-            glfwSetWindowShouldClose(window,true);
-
-        // Camera
-        float camX=cos(glm::radians(yaw))*radius;
-        float camZ=sin(glm::radians(yaw))*radius;
-        glm::vec3 camPos(camX,20,camZ);
-        glm::mat4 view=glm::lookAt(camPos, glm::vec3(0), glm::vec3(0,1,0));
-        glm::mat4 projection=glm::perspective(glm::radians(45.0f),(float)SCR_WIDTH/SCR_HEIGHT,0.1f,200.0f);
-
-        // Clear
-        if(dayMode) glClearColor(0.5f,0.8f,1.0f,1);
-        else glClearColor(0.1f,0.1f,0.2f,1);
-        glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
-
-        // Draw scene
-        drawScene(sceneObjects, view, projection, shader);
-
-        // No UI, so skip ImGui code
-
-        glfwSwapBuffers(window);
-        glfwPollEvents();
+    // Bar and counter
+    sceneObjects.push_back({cubeMesh, {20,1.0f,-10}, {0,0,0}, {4,1,8}, "BarCounter"});
+    // Stools for bar
+    for (int i=0; i<6; ++i){
+        float x = 18 + i*1.2f;
+        sceneObjects.push_back({cubeMesh, {x,0.25f,-10}, {0,0,0}, {0.5,0.5,0.5}, "BarStool"});
     }
 
-    // Cleanup
-    for (auto& obj : sceneObjects) {
-        for (auto vao : obj.mesh.VAOs) glDeleteVertexArrays(1, &vao);
-        for (auto vbo : obj.mesh.VBOs) glDeleteBuffers(1, &vbo);
-        for (auto ebo : obj.mesh.EBOs) glDeleteBuffers(1, &ebo);
-    }
-    glDeleteProgram(shader);
-    glfwDestroyWindow(window);
-    glfwTerminate();
-    return 0;
+    // Food station / kitchen
+    sceneObjects.push_back({cubeMesh, {-20,1.0f,15}, {0,0,0}, {8,2,4}, "Kitchen"});
+
+    // Decorations
+    sceneObjects.push_back({cubeMesh, {0,0.25f,0}, {0,0,0}, {0.5,0.5,0.5}, "Plant1"});
+    sceneObjects.push_back({cubeMesh, {10,0.25f,-20}, {0,0,0}, {0.5,0.5,0.5}, "Plant2"});
+    sceneObjects.push_back({cubeMesh, {-10,0.25f,10}, {0,0,0}, {0.5,0.5,0.5}, "Plant3"});
 }
