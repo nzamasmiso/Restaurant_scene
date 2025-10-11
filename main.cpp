@@ -1,398 +1,462 @@
-// main.cpp
 
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
+// restaurant_floorplan_modern.cpp
+// Modern OpenGL 3.3 core + ImGui single-file 2D restaurant floor plan (responsive, shader-based).
 
-#include <GL/glew.h>
-#include <GLFW/glfw3.h>
-
-#include <iostream>
+#include <cstdio>
+#include <cstdlib>
 #include <vector>
 #include <string>
 #include <cmath>
+#include <iostream>
+
+#include <glad/glad.h>
+#include <GLFW/glfw3.h>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
-// Vertex shader
-const char* vertexShaderSrc = R"(
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+// ---------------------- Shader sources ----------------------
+static const char* VERT_SRC = R"glsl(
 #version 330 core
-layout (location=0) in vec3 aPos;
-layout (location=1) in vec3 aNormal;
-layout (location=2) in vec2 aTexCoord;
-
-out vec3 FragPos;
-out vec3 Normal;
-out vec2 TexCoord;
-
-uniform mat4 model;
-uniform mat4 view;
-uniform mat4 projection;
-
+layout(location=0) in vec2 aPos;
+layout(location=1) in vec4 aColor;
+uniform mat4 uMVP;
+out vec4 vColor;
 void main() {
-    FragPos = vec3(model * vec4(aPos, 1.0));
-    Normal = mat3(transpose(inverse(model))) * aNormal;
-    TexCoord = aTexCoord;
-    gl_Position = projection * view * vec4(FragPos, 1.0);
+    vColor = aColor;
+    gl_Position = uMVP * vec4(aPos, 0.0, 1.0);
 }
-)";
+)glsl";
 
-// Fragment shader
-const char* fragmentShaderSrc = R"(
+static const char* FRAG_SRC = R"glsl(
 #version 330 core
+in vec4 vColor;
 out vec4 FragColor;
+void main(){ FragColor = vColor; }
+)glsl";
 
-in vec3 FragPos;
-in vec3 Normal;
-in vec2 TexCoord;
-
-uniform vec3 viewPos;
-uniform sampler2D albedoMap;
-
-struct Light {
-    vec3 position;
-    vec3 color;
-    float intensity;
-};
-uniform Light dirLight;
-uniform Light pointLights[4];
-uniform Light spotLights[2];
-
-uniform float shininess;
-
-void main() {
-    vec3 norm = normalize(Normal);
-    vec3 viewDir = normalize(viewPos - FragPos);
-    vec3 albedo = texture(albedoMap, TexCoord).rgb;
-
-    vec3 ambient = 0.1 * albedo;
-    vec3 result = ambient;
-
-    // Directional light
-    vec3 lightDir = normalize(-vec3(0.0, -1.0, -1.0));
-    float diff = max(dot(norm, lightDir), 0.0);
-    result += diff * dirLight.color * dirLight.intensity;
-
-    for (int i=0; i<4; ++i) {
-        vec3 toLight = normalize(pointLights[i].position - FragPos);
-        float diffPL = max(dot(norm, toLight), 0.0);
-        vec3 diffusePL = diffPL * pointLights[i].color * pointLights[i].intensity;
-        vec3 halfwayDir = normalize(toLight + viewDir);
-        float spec = pow(max(dot(norm, halfwayDir), 0.0), shininess);
-        vec3 specular = spec * pointLights[i].color * pointLights[i].intensity;
-        result += diffusePL + specular;
-    }
-
-    for (int i=0; i<2; ++i) {
-        vec3 toLight = normalize(spotLights[i].position - FragPos);
-        float theta = dot(toLight, normalize(-spotLights[i].position));
-        float cutoff = cos(radians(12.5));
-        float outerCutoff = cos(radians(17.5));
-        float intensityFactor = smoothstep(cutoff, outerCutoff, theta);
-        float diffSpot = max(dot(norm, toLight), 0.0);
-        vec3 diffuseSpot = diffSpot * spotLights[i].color * spotLights[i].intensity * intensityFactor;
-        vec3 halfwayDir = normalize(toLight + viewDir);
-        float spec = pow(max(dot(norm, halfwayDir), 0.0), shininess);
-        vec3 specularSpot = spec * spotLights[i].color * spotLights[i].intensity * intensityFactor;
-        result += diffuseSpot + specularSpot;
-    }
-
-    FragColor = vec4(result,1.0);
+// ---------------------- Shader utilities ----------------------
+static GLuint compileShader(GLenum t, const char* src){
+    GLuint s = glCreateShader(t);
+    glShaderSource(s,1,&src,nullptr);
+    glCompileShader(s);
+    GLint ok=0; glGetShaderiv(s,GL_COMPILE_STATUS,&ok);
+    if(!ok){ char log[1024]; glGetShaderInfoLog(s,1024,nullptr,log); std::cerr<<"Shader compile error: "<<log<<"\n"; }
+    return s;
 }
-)";
+static GLuint createProgram(const char* vs,const char* fs){
+    GLuint vsId = compileShader(GL_VERTEX_SHADER, vs);
+    GLuint fsId = compileShader(GL_FRAGMENT_SHADER, fs);
+    GLuint p = glCreateProgram();
+    glAttachShader(p, vsId); glAttachShader(p, fsId);
+    glLinkProgram(p);
+    GLint ok=0; glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if(!ok){ char log[1024]; glGetProgramInfoLog(p,1024,nullptr,log); std::cerr<<"Link error: "<<log<<"\n"; }
+    glDeleteShader(vsId); glDeleteShader(fsId);
+    return p;
+}
 
-// Structures
-struct Mesh {
-    std::vector<GLuint> VAOs, VBOs, EBOs;
-    std::vector<unsigned int> indexCounts;
+// ---------------------- Draw buffer ----------------------
+struct DrawBuffer {
+    std::vector<float> data;
+    GLuint vao=0, vbo=0;
+    size_t vertexCount=0;
+    void init(){
+        glGenVertexArrays(1,&vao);
+        glGenBuffers(1,&vbo);
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, 1<<20, nullptr, GL_DYNAMIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,6*sizeof(float),(void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1,4,GL_FLOAT,GL_FALSE,6*sizeof(float),(void*)(2*sizeof(float)));
+        glBindVertexArray(0);
+    }
+    void begin(){ data.clear(); vertexCount=0; }
+    void pushVertex(float x,float y, float r,float g,float b,float a=1.0f){
+        data.push_back(x); data.push_back(y);
+        data.push_back(r); data.push_back(g); data.push_back(b); data.push_back(a);
+        vertexCount++;
+    }
+    void uploadAndDrawTriangles(GLenum mode){
+        if(data.empty()) return;
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, data.size()*sizeof(float), data.data());
+        glBindVertexArray(vao);
+        glDrawArrays(mode, 0, (GLsizei)vertexCount);
+        glBindVertexArray(0);
+    }
+    void destroy(){ if(vbo) glDeleteBuffers(1,&vbo); if(vao) glDeleteVertexArrays(1,&vao); }
 };
 
-struct SceneObject {
-    Mesh mesh;
-    glm::vec3 pos;
-    glm::vec3 rot;
-    glm::vec3 scale;
-    std::string name;
-    GLuint textureID;
+// ---------------------- Geometry helpers ----------------------
+static void addRectTriangles(DrawBuffer &buf, float x, float y, float w, float h, glm::vec4 color){
+    buf.pushVertex(x, y, color.r, color.g, color.b, color.a);
+    buf.pushVertex(x+w, y, color.r, color.g, color.b, color.a);
+    buf.pushVertex(x+w, y+h, color.r, color.g, color.b, color.a);
+    buf.pushVertex(x, y, color.r, color.g, color.b, color.a);
+    buf.pushVertex(x+w, y+h, color.r, color.g, color.b, color.a);
+    buf.pushVertex(x, y+h, color.r, color.g, color.b, color.a);
+}
+static void addRectLines(DrawBuffer &buf, float x, float y, float w, float h, glm::vec4 color){
+    buf.pushVertex(x, y, color.r,color.g,color.b,color.a);
+    buf.pushVertex(x+w, y, color.r,color.g,color.b,color.a);
+    buf.pushVertex(x+w, y, color.r,color.g,color.b,color.a);
+    buf.pushVertex(x+w, y+h, color.r,color.g,color.b,color.a);
+    buf.pushVertex(x+w, y+h, color.r,color.g,color.b,color.a);
+    buf.pushVertex(x, y+h, color.r,color.g,color.b,color.a);
+    buf.pushVertex(x, y+h, color.r,color.g,color.b,color.a);
+    buf.pushVertex(x, y, color.r,color.g,color.b,color.a);
+}
+static void addCircleTriangles(DrawBuffer &buf, float cx, float cy, float r, int segments, glm::vec4 color){
+    for(int i=0;i<segments;i++){
+        float a1 = (float)i / segments * 2.0f * M_PI;
+        float a2 = (float)(i+1) / segments * 2.0f * M_PI;
+        buf.pushVertex(cx, cy, color.r,color.g,color.b,color.a);
+        buf.pushVertex(cx + cosf(a1)*r, cy + sinf(a1)*r, color.r,color.g,color.b,color.a);
+        buf.pushVertex(cx + cosf(a2)*r, cy + sinf(a2)*r, color.r,color.g,color.b,color.a);
+    }
+}
+
+// ---------------------- Floor plan structures ----------------------
+struct RectItem { float x,y,w,h; glm::vec4 color; std::string label; };
+struct CircleItem { float x,y,r; glm::vec4 color; std::string label; };
+struct DoorItem { float x,y,w,h; std::string hinge; std::string label;};
+
+struct FloorPlan {
+    bool showGrid = true;
+    bool showLabels = true;
+    bool showDoorSwings = true;
+    bool showDimensions = true;
+    float scaleX = 1.0f;
+    float scaleY = 1.0f;
+
+    std::vector<RectItem> walls;
+    std::vector<RectItem> kitchen;
+    std::vector<RectItem> bar;
+    std::vector<RectItem> windows;
+    std::vector<RectItem> restrooms;
+    std::vector<RectItem> fire;
+    std::vector<RectItem> tablesRect;
+    std::vector<CircleItem> tablesCircle;
+    std::vector<DoorItem> doors;
+
+    DrawBuffer triBuf;
+    DrawBuffer lineBuf;
+    glm::mat4 proj;
+    int canvasW=1200, canvasH=800;
+
+    void init(int w,int h){
+        canvasW=w; canvasH=h;
+        triBuf.init(); lineBuf.init();
+        setupDefaultLayout();
+        updateProjection(w,h);
+    }
+
+    void setupDefaultLayout(){
+        walls.clear(); kitchen.clear(); bar.clear(); windows.clear(); restrooms.clear();
+        fire.clear(); tablesRect.clear(); tablesCircle.clear(); doors.clear();
+
+        // --- Exterior wall ---
+        walls.push_back({50,50,1100,700, glm::vec4(0.172f,0.243f,0.314f,1.0f), ""});
+
+        // --- Interior partition walls ---
+        walls.push_back({400, 50, 3, 700, glm::vec4(0.365f,0.427f,0.494f,1.0f), "Interior  Wall"});
+        walls.push_back({850, 450, 3, 300, glm::vec4(0.365f,0.427f,0.494f,1.0f), ""});
+
+        // --- Kitchen ---
+        kitchen.push_back({100,100,200,80, glm::vec4(0.5f,0.55f,0.55f,1.0f), "Preperation Area"});
+        kitchen.push_back({100,200,150,60, glm::vec4(0.906f,0.298f,0.196f,1.0f), "Cooking"});
+        kitchen.push_back({100,280,120,50, glm::vec4(0.204f,0.596f,0.859f,1.0f), "Sink"});
+        kitchen.push_back({280,100,80,40, glm::vec4(0.608f,0.353f,0.714f,1.0f), "Hand Wash"});
+        kitchen.push_back({100,350,250,120, glm::vec4(0.204f,0.255f,0.369f,1.0f), "Storeroom"});
+
+        // --- Bar counter ---
+        bar.push_back({935,100,25,250, glm::vec4(0.827f,0.329f,0.0f,1.0f), "Bar Counter"});
+	for(int i=0;i<5;i++)
+           tablesCircle.push_back({920.0f, 120.0f + i*50.0f, 6.0f, glm::vec4(0.902f,0.494f,0.133f,1.0f), ""});
+        // --- Windows ---
+        windows.push_back({200,50,150,10, glm::vec4(0.204f,0.596f,0.859f,1.0f), "Window"});
+        windows.push_back({700,50,200,10, glm::vec4(0.204f,0.596f,0.859f,1.0f), "Window"});
+        windows.push_back({50,200,10,100, glm::vec4(0.204f,0.596f,0.859f,1.0f), "Window"});
+        windows.push_back({500,730,200,10, glm::vec4(0.204f,0.596f,0.859f,1.0f), "Window"});
+        windows.push_back({1030,50,40,10, glm::vec4(0.529f,0.808f,0.922f,1.0f), "Men's Toilet Window"});
+        windows.push_back({1030,150,40,10, glm::vec4(0.529f,0.808f,0.922f,1.0f), "Women's Toilet Window"});
+
+        // --- Restrooms ---
+        restrooms.push_back({1030,50,120,100, glm::vec4(0.608f,0.357f,0.714f,1.0f), "Men's"});
+        restrooms.push_back({1030,150,120,100, glm::vec4(0.608f,0.357f,0.714f,1.0f), "Women's"});
+
+        // --- Doors ---
+        doors.push_back({500,50,80,15, "Main Entrance"});
+        doors.push_back({50,600,15,60, "Back Door"});
+        doors.push_back({1135,350,15,80, "Emergency Exit"});
+        doors.push_back({400,400,15,80, "Side Door"});
+
+        // --- Fire Equipment ---
+        fire.push_back({390,230,12,20, glm::vec4(0.906f,0.298f,0.196f,1.0f), "Fire Extinguisher"});
+        fire.push_back({400,490,12,20, glm::vec4(0.906f,0.298f,0.196f,1.0f), "Fire Extinguisher"});
+        fire.push_back({920,50,12,20, glm::vec4(0.906f,0.298f,0.196f,1.0f), ""});
+        fire.push_back({1138,450,12,20, glm::vec4(0.906f,0.298f,0.196f,1.0f), "Fire Extinguisher"});
+
+        // --- Rectangular Tables with Chairs ---
+        const float tableSize = 50.0f;
+        const float chairW = 12.0f, chairH = 20.0f;
+        const float leftX = 520.0f;
+        std::vector<float> leftY = {180.0f, 260.0f, 340.0f};
+        const float rightX = 680.0f;
+        std::vector<float> rightY = {180.0f, 260.0f, 340.0f};
+
+        for(auto &y: leftY){
+            tablesRect.push_back({leftX, y, tableSize, tableSize, glm::vec4(0.902f,0.494f,0.133f,1.0f), "Table"});
+            tablesRect.push_back({leftX - chairW, y + (tableSize-chairH)/2, chairW, chairH, glm::vec4(0.10f,0.54f,0.22f,1.0f), ""});
+            tablesRect.push_back({leftX + tableSize, y + (tableSize-chairH)/2, chairW, chairH, glm::vec4(0.10f,0.54f,0.22f,1.0f), ""});
+        }
+
+        for(auto &y: rightY){
+            tablesRect.push_back({rightX, y, tableSize, tableSize, glm::vec4(0.902f,0.494f,0.133f,1.0f), "Table"});
+            tablesRect.push_back({rightX - chairW, y + (tableSize-chairH)/2, chairW, chairH, glm::vec4(0.10f,0.54f,0.22f,1.0f), ""});
+            tablesRect.push_back({rightX + tableSize, y + (tableSize-chairH)/2, chairW, chairH, glm::vec4(0.10f,0.54f,0.22f,1.0f), ""});
+        }
+
+        // --- Round Tables ---
+        int numRound = 2;
+        float baseX = 550.0f;
+        float baseY = 600.0f;
+        float tableSpacing = 170.0f;
+        float tableRadius = 60.0f;
+        float chairDist = tableRadius + 15.0f;
+        for(int i=0;i<numRound;i++){
+            float tx = baseX + i*tableSpacing;
+            float ty = baseY;
+            tablesCircle.push_back({tx, ty, tableRadius, glm::vec4(0.55f,0.35f,0.2f,1.0f), "Table"});
+
+            for(int c=0;c<4;c++){
+                float angle = (float)c/4.0f * 2.0f * M_PI;
+                float cx = tx + cosf(angle)*chairDist;
+                float cy = ty + sinf(angle)*chairDist;
+                tablesRect.push_back({cx-chairW/2, cy-chairH/2, chairW, chairH, glm::vec4(0.10f,0.54f,0.22f,1.0f), "Chair"});
+            }
+        }
+
+        // --- Sofa Area ---
+        tablesRect.push_back({965, 710, 140, 40, glm::vec4(0.32f,0.20f,0.10f,1.0f), "Sofa"});
+        tablesRect.push_back({970, 715, 60, 30, glm::vec4(0.45f,0.30f,0.18f,1.0f), ""});
+        tablesRect.push_back({1040, 715, 60, 30, glm::vec4(0.45f,0.30f,0.18f,1.0f), ""});
+        tablesRect.push_back({1100, 550, 40, 150, glm::vec4(0.32f,0.20f,0.10f,1.0f), "Sofa"});
+        tablesRect.push_back({1105, 555, 30, 60, glm::vec4(0.45f,0.30f,0.18f,1.0f), ""});
+        tablesRect.push_back({1105, 635, 30, 60, glm::vec4(0.45f,0.30f,0.18f,1.0f), ""});
+        tablesRect.push_back({1000, 580, 80, 100, glm::vec4(0.6f,0.4f,0.2f,1.0f), "Coffee Table"});
+
+        // TV
+        walls.push_back({853, 550, 10, 100, glm::vec4(0.05f,0.05f,0.05f,1.0f), "TV"});
+    }
+
+    void drawLabels() {
+    if(!showLabels) return;
+
+    ImDrawList* draw_list = ImGui::GetForegroundDrawList();
+    float sx = scaleX;
+    float sy = scaleY;
+    ImFont* font = ImGui::GetFont();
+    float fontSize = 14.0f * sx;
+
+    auto worldToScreen = [&](float wx, float wy, ImVec2 &out) -> bool {
+        glm::vec4 clip = proj * glm::vec4(wx * sx, wy * sy, 0.0f, 1.0f);
+        if (clip.w == 0.0f) return false;
+        glm::vec3 ndc = glm::vec3(clip) / clip.w;
+        if (ndc.x < -1.0f || ndc.x > 1.0f || ndc.y < -1.0f || ndc.y > 1.0f) return false;
+        float sx_pix = (ndc.x * 0.5f + 0.5f) * (float)canvasW;
+        float sy_pix = (1.0f - (ndc.y * 0.5f + 0.5f)) * (float)canvasH;
+        out = ImVec2(sx_pix, sy_pix);
+        return true;
+    };
+    auto drawRectLabels = [&](const std::vector<RectItem> &items){
+        for(const auto &r: items){
+            if(r.label.empty()) continue;
+            float cx = r.x + r.w * 0.5f;
+            float cy = r.y + r.h * 0.5f;
+            ImVec2 screenPos;
+            if(!worldToScreen(cx, cy, screenPos)) continue;
+            ImVec2 textSize = ImGui::CalcTextSize(r.label.c_str());
+            ImVec2 textPos(screenPos.x - textSize.x * 0.5f, screenPos.y - textSize.y * 0.5f);
+            ImU32 bg = IM_COL32(255,255,255,200);
+            draw_list->AddRectFilled(ImVec2(textPos.x - 4, textPos.y - 2),
+                                     ImVec2(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2),
+                                     bg);
+            draw_list->AddText(font, fontSize, textPos, IM_COL32(0,0,0,255), r.label.c_str());
+        }
+    };
+
+    auto drawCircleLabels = [&](const std::vector<CircleItem> &items){
+        for(const auto &c: items){
+            if(c.label.empty()) continue;
+            ImVec2 screenPos;
+            if(!worldToScreen(c.x, c.y, screenPos)) continue;
+            ImVec2 textSize = ImGui::CalcTextSize(c.label.c_str());
+            ImVec2 textPos(screenPos.x - textSize.x * 0.5f, screenPos.y - textSize.y * 0.5f);
+            ImU32 bg = IM_COL32(255,255,255,200);
+            draw_list->AddRectFilled(ImVec2(textPos.x - 4, textPos.y - 2),
+                                     ImVec2(textPos.x + textSize.x + 4, textPos.y + textSize.y + 2),
+                                     bg);
+            draw_list->AddText(font, fontSize, textPos, IM_COL32(0,0,0,255), c.label.c_str());
+        }
+    };
+
+    // ✅ Dedicated lambda for DoorItem
+    
+    // ✅ Draw all label types
+    drawRectLabels(walls);
+    drawRectLabels(kitchen);
+    drawRectLabels(bar);
+    drawRectLabels(windows);
+    drawRectLabels(restrooms);
+    drawRectLabels(fire);
+    drawRectLabels(tablesRect);
+    drawCircleLabels(tablesCircle);
+//    drawDoorLabels(doors);  // <-- now works correctly
+}
+
+
+    void updateProjection(int w,int h){
+        canvasW = w;
+        canvasH = h;
+        glViewport(0, 0, w, h);
+
+        scaleX = (float)w / 1200.0f;
+        scaleY = (float)h / 800.0f;
+        float s = (scaleX < scaleY) ? scaleX : scaleY;
+        scaleX = scaleY = s;
+
+        float viewW = 1200.0f * scaleX;
+        float viewH = 800.0f * scaleY;
+        proj = glm::ortho(0.0f, viewW, viewH, 0.0f, -1.0f, 1.0f);
+    }
+
+    void render(GLuint shader){
+        triBuf.begin();
+        float sx = scaleX, sy = scaleY;
+
+        // Draw all triangles
+        addRectTriangles(triBuf, 30*sx, 30*sy, 1140*sx, 740*sy, glm::vec4(0.96f,0.97f,0.98f,1.0f));
+        for(auto &w: walls) addRectTriangles(triBuf, w.x*sx, w.y*sy, w.w*sx, w.h*sy, w.color);
+        for(auto &k: kitchen) addRectTriangles(triBuf, k.x*sx, k.y*sy, k.w*sx, k.h*sy, k.color);
+        for(auto &b: bar) addRectTriangles(triBuf, b.x*sx, b.y*sy, b.w*sx, b.h*sy, b.color);
+        for(auto &win: windows) addRectTriangles(triBuf, win.x*sx, win.y*sy, win.w*sx, win.h*sy, win.color);
+        for(auto &r: restrooms) addRectTriangles(triBuf, r.x*sx, r.y*sy, r.w*sx, r.h*sy, r.color);
+        for(auto &f: fire) addRectTriangles(triBuf, f.x*sx, f.y*sy, f.w*sx, f.h*sy, f.color);
+
+        glm::vec4 doorColor(0.545f,0.271f,0.075f,1.0f);
+        for(auto &d: doors) addRectTriangles(triBuf, d.x*sx, d.y*sy, d.w*sx, d.h*sy, doorColor);
+
+        for(auto &t: tablesRect) addRectTriangles(triBuf, t.x*sx, t.y*sy, t.w*sx, t.h*sy, t.color);
+        for(auto &c: tablesCircle) addCircleTriangles(triBuf, c.x*sx, c.y*sy, c.r*sx, 20, c.color);
+
+        glUseProgram(shader);
+        glUniformMatrix4fv(glGetUniformLocation(shader,"uMVP"),1,GL_FALSE, glm::value_ptr(proj));
+        triBuf.uploadAndDrawTriangles(GL_TRIANGLES);
+
+        // --- Lines ---
+        lineBuf.begin();
+        if(showGrid){
+            glm::vec4 gcol(0.0f,0.0f,0.0f,0.06f);
+            int step = 50;
+            for(int x=50;x<=1150;x+=step) lineBuf.pushVertex(x*sx,50*sy,gcol.r,gcol.g,gcol.b,gcol.a), lineBuf.pushVertex(x*sx,750*sy,gcol.r,gcol.g,gcol.b,gcol.a);
+            for(int y=50;y<=750;y+=step) lineBuf.pushVertex(50*sx,y*sy,gcol.r,gcol.g,gcol.b,gcol.a), lineBuf.pushVertex(1150*sx,y*sy,gcol.r,gcol.g,gcol.b,gcol.a);
+        }
+
+        glm::vec4 outlineColor(0.2f,0.24f,0.28f,1.0f);
+        for(auto &w: walls) addRectLines(lineBuf, w.x*sx, w.y*sy, w.w*sx, w.h*sy, outlineColor);
+        for(auto &k: kitchen) addRectLines(lineBuf, k.x*sx, k.y*sy, k.w*sx, k.h*sy, glm::vec4(0.12f,0.12f,0.12f,1.0f));
+        for(auto &t: tablesRect) addRectLines(lineBuf, t.x*sx, t.y*sy, t.w*sx, t.h*sy, glm::vec4(0.62f,0.36f,0.12f,1.0f));
+
+        glUniformMatrix4fv(glGetUniformLocation(shader,"uMVP"),1,GL_FALSE, glm::value_ptr(proj));
+        lineBuf.uploadAndDrawTriangles(GL_LINES);
+    }
+
+    void destroy(){ triBuf.destroy(); lineBuf.destroy(); }
 };
 
-// Camera parameters
-float cameraDistance = 50.0f;
-float cameraYaw = 45.0f;
-float cameraPitch = -20.0f;
+// ---------------------- GLFW + Main ----------------------
+static FloorPlan *gPlan = nullptr;
+static GLuint gProgram = 0;
+static int gWinW=1280,gWinH=800;
+static void framebuffer_size_cb(GLFWwindow*, int w,int h){
+    if(w>0 && h>0){ gWinW=w; gWinH=h; if(gPlan) gPlan->updateProjection(w,h); }
+}
 
-// Globals
-GLFWwindow* window;
-unsigned int SCR_WIDTH=1280, SCR_HEIGHT=720;
-GLuint shaderProgram;
-
-// Function prototypes
-GLuint compileShader(GLenum type, const char* src);
-GLuint createShaderProgram();
-Mesh createCubeMesh();
-GLuint LoadTexture(const char* filepath);
-void setupScene(std::vector<SceneObject>& sceneObjects, Mesh& cubeMesh);
-void drawScene(const std::vector<SceneObject>& sceneObjects, const glm::mat4& view, const glm::mat4& projection, GLuint shader);
-void processInput(GLFWwindow* window);
-
-// Main
 int main() {
-    // Init GLFW
-    if (!glfwInit()) { std::cerr<<"Failed to init GLFW"; return -1; }
+    if(!glfwInit()){ fprintf(stderr,"glfwInit failed\n"); return 1; }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);
     glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
-    window=glfwCreateWindow(SCR_WIDTH,SCR_HEIGHT,"Crowded Restaurant Scene",nullptr,nullptr);
-    if (!window){ std::cerr<<"Failed to create GLFW"; glfwTerminate(); return -1; }
+
+    GLFWwindow* window = glfwCreateWindow(gWinW,gWinH,"Restaurant Floor Plan (2D Modern OpenGL)",nullptr,nullptr);
+    if(!window){ fprintf(stderr,"Window creation failed\n"); glfwTerminate(); return 1; }
     glfwMakeContextCurrent(window);
-    glewExperimental=true; glewInit();
+    glfwSetFramebufferSizeCallback(window, framebuffer_size_cb);
 
-    // Shader
-    GLuint shader=createShaderProgram();
+    if(!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)){ fprintf(stderr,"gladLoadGLLoader failed\n"); return 1; }
 
-    // Mesh
-    Mesh cubeMesh = createCubeMesh();
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    // Textures (replace paths with your images)
-    GLuint wallTex=LoadTexture("textures/wall.jpg");
-    GLuint floorTex=LoadTexture("textures/floor.jpg");
-    GLuint tableTex=LoadTexture("textures/table.jpg");
-    GLuint chairTex=LoadTexture("textures/chair.jpg");
-    GLuint barTex=LoadTexture("textures/bar.jpg");
-    GLuint kitchenTex=LoadTexture("textures/kitchen.jpg");
-    GLuint sofaTex=LoadTexture("textures/sofa.jpg");
-    GLuint plantTex=LoadTexture("textures/plant.jpg");
+    gProgram = createProgram(VERT_SRC, FRAG_SRC);
 
-    // Build scene with many objects
-    std::vector<SceneObject> sceneObjects;
-    setupScene(sceneObjects, cubeMesh);
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO &io=ImGui::GetIO(); (void)io;
+    ImGui::StyleColorsLight();
+    ImGui_ImplGlfw_InitForOpenGL(window,true);
+    ImGui_ImplOpenGL3_Init("#version 330 core");
 
-    // Assign textures based on object names
-    for (auto& obj : sceneObjects) {
-        if (obj.name.find("Wall") != std::string::npos) obj.textureID=wallTex;
-        else if (obj.name.find("Floor") != std::string::npos) obj.textureID=floorTex;
-        else if (obj.name.find("Table") != std::string::npos) obj.textureID=tableTex;
-        else if (obj.name.find("Chair") != std::string::npos) obj.textureID=chairTex;
-        else if (obj.name.find("Bar") != std::string::npos) obj.textureID=barTex;
-        else if (obj.name.find("Kitchen") != std::string::npos) obj.textureID=kitchenTex;
-        else if (obj.name.find("Sofa") != std::string::npos) obj.textureID=sofaTex;
-        else if (obj.name.find("Plant") != std::string::npos) obj.textureID=plantTex;
-        else obj.textureID=wallTex;
-    }
+    FloorPlan plan;
+    plan.init(1200,800);
+    gPlan = &plan;
 
-    glEnable(GL_DEPTH_TEST);
-
-    // Main loop
-    while (!glfwWindowShouldClose(window)){
-        processInput(window);
-
-        // Camera position with mouse control optional
-        float camX = cameraDistance * cos(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
-        float camY = cameraDistance * sin(glm::radians(cameraPitch));
-        float camZ = cameraDistance * sin(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
-        glm::vec3 cameraPos(camX, camY, camZ);
-        glm::mat4 view=glm::lookAt(cameraPos, glm::vec3(0), glm::vec3(0,1,0));
-        glm::mat4 projection=glm::perspective(glm::radians(45.0f),(float)SCR_WIDTH/SCR_HEIGHT,0.1f,200.0f);
-
-        // Clear
-        if(true) glClearColor(0.5f,0.8f,1.0f,1);
-        glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
-
-        // Draw scene
-        drawScene(sceneObjects, view, projection, shader);
-
-        glfwSwapBuffers(window);
+    // --- Main loop ---
+    while(!glfwWindowShouldClose(window)){
         glfwPollEvents();
+
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+
+        ImGui::Begin("Controls");
+        if(ImGui::Button("Reset Layout")) plan.setupDefaultLayout();
+        ImGui::Checkbox("Show Grid",&plan.showGrid);
+        ImGui::Checkbox("Show Labels",&plan.showLabels);
+        ImGui::Checkbox("Show Door Swings",&plan.showDoorSwings);
+        ImGui::Checkbox("Show Dimensions",&plan.showDimensions);
+        ImGui::End();
+
+        glClearColor(0.925f,0.941f,0.945f,1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        plan.render(gProgram);
+        plan.drawLabels();  // <-- fixed capitalization and added semicolon
+
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        glfwSwapBuffers(window);
     }
 
-    // Cleanup
-    for (auto& obj : sceneObjects) {
-        for (auto vao : obj.mesh.VAOs) glDeleteVertexArrays(1, &vao);
-        for (auto vbo : obj.mesh.VBOs) glDeleteBuffers(1, &vbo);
-        for (auto ebo : obj.mesh.EBOs) glDeleteBuffers(1, &ebo);
-    }
-    glDeleteProgram(shader);
+    plan.destroy();
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+    glDeleteProgram(gProgram);
     glfwDestroyWindow(window);
     glfwTerminate();
     return 0;
-}
-
-// Input handling
-void processInput(GLFWwindow* window){
-    if (glfwGetKey(window, GLFW_KEY_ESCAPE)==GLFW_PRESS)
-        glfwSetWindowShouldClose(window, true);
-    // Camera controls
-    if (glfwGetKey(window, GLFW_KEY_W)==GLFW_PRESS)
-        cameraDistance -= 0.5f;
-    if (glfwGetKey(window, GLFW_KEY_S)==GLFW_PRESS)
-        cameraDistance += 0.5f;
-    if (glfwGetKey(window, GLFW_KEY_A)==GLFW_PRESS)
-        cameraYaw -= 1;
-    if (glfwGetKey(window, GLFW_KEY_D)==GLFW_PRESS)
-        cameraYaw += 1;
-    if (cameraDistance<10) cameraDistance=10;
-    if (cameraDistance>150) cameraDistance=150;
-}
-
-// Shader functions
-GLuint compileShader(GLenum type, const char* src) {
-    GLuint s=glCreateShader(type);
-    glShaderSource(s,1,&src,nullptr);
-    glCompileShader(s);
-    int success; glGetShaderiv(s,GL_COMPILE_STATUS,&success);
-    if (!success){ char info[512]; glGetShaderInfoLog(s,512,nullptr,info); std::cerr<<"Shader error: "<<info<<"\n"; }
-    return s;
-}
-
-GLuint createShaderProgram() {
-    GLuint v=compileShader(GL_VERTEX_SHADER,vertexShaderSrc);
-    GLuint f=compileShader(GL_FRAGMENT_SHADER,fragmentShaderSrc);
-    GLuint prog=glCreateProgram();
-    glAttachShader(prog,v); glAttachShader(prog,f);
-    glLinkProgram(prog);
-    int success; glGetProgramiv(prog,GL_LINK_STATUS,&success);
-    if (!success){ char info[512]; glGetProgramInfoLog(prog,512,nullptr,info); std::cerr<<"Link error: "<<info<<"\n"; }
-    glDeleteShader(v); glDeleteShader(f);
-    return prog;
-}
-
-// Create cube mesh
-Mesh createCubeMesh() {
-    Mesh mesh;
-    float vertices[] = {
-        // positions          normals           texcoords
-        -0.5f,-0.5f, 0.5f,   0,0,1,            0,0,
-         0.5f,-0.5f, 0.5f,   0,0,1,            1,0,
-         0.5f, 0.5f, 0.5f,   0,0,1,            1,1,
-        -0.5f, 0.5f, 0.5f,   0,0,1,            0,1,
-        -0.5f,-0.5f,-0.5f,   0,0,-1,           0,0,
-         0.5f,-0.5f,-0.5f,   0,0,-1,           1,0,
-         0.5f, 0.5f,-0.5f,   0,0,-1,           1,1,
-        -0.5f, 0.5f,-0.5f,   0,0,-1,           0,1,
-        -0.5f,-0.5f,-0.5f,  -1,0,0,            0,0,
-        -0.5f, 0.5f,-0.5f,  -1,0,0,            1,0,
-        -0.5f, 0.5f, 0.5f,  -1,0,0,            1,1,
-        -0.5f,-0.5f, 0.5f,  -1,0,0,            0,1,
-        0.5f,-0.5f,-0.5f,   1,0,0,            0,0,
-        0.5f, 0.5f,-0.5f,   1,0,0,            1,0,
-        0.5f, 0.5f, 0.5f,   1,0,0,            1,1,
-        0.5f,-0.5f, 0.5f,   1,0,0,            0,1,
-        -0.5f, 0.5f, 0.5f,   0,1,0,            0,0,
-         0.5f, 0.5f, 0.5f,   0,1,0,            1,0,
-         0.5f, 0.5f,-0.5f,   0,1,0,            1,1,
-        -0.5f, 0.5f,-0.5f,   0,1,0,            0,1,
-        -0.5f,-0.5f, 0.5f,   0,-1,0,           0,0,
-         0.5f,-0.5f, 0.5f,   0,-1,0,           1,0,
-         0.5f,-0.5f,-0.5f,   0,-1,0,           1,1,
-        -0.5f,-0.5f,-0.5f,   0,-1,0,           0,1,
-    };
-    unsigned int indices[] = {
-        0,1,2, 2,3,0,
-        4,5,6, 6,7,4,
-        8,9,10,10,11,8,
-        12,13,14,14,15,12,
-        16,17,18,18,19,16,
-        20,21,22,22,23,20
-    };
-
-    GLuint VAO,VBO,EBO;
-    glGenVertexArrays(1,&VAO);
-    glGenBuffers(1,&VBO);
-    glGenBuffers(1,&EBO);
-    glBindVertexArray(VAO);
-    glBindBuffer(GL_ARRAY_BUFFER,VBO);
-    glBufferData(GL_ARRAY_BUFFER,sizeof(vertices),vertices,GL_STATIC_DRAW);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,EBO);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER,sizeof(indices),indices,GL_STATIC_DRAW);
-    int stride=8*sizeof(float);
-    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,stride,(void*)0);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,stride,(void*)(3*sizeof(float)));
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(2,2,GL_FLOAT,GL_FALSE,stride,(void*)(6*sizeof(float)));
-    glEnableVertexAttribArray(2);
-    glBindVertexArray(0);
-
-    Mesh mesh;
-    mesh.VAOs.push_back(VAO);
-    mesh.VBOs.push_back(VBO);
-    mesh.EBOs.push_back(EBO);
-    mesh.indexCounts.push_back(sizeof(indices)/sizeof(indices[0]));
-    return mesh;
-}
-
-// Load texture
-GLuint LoadTexture(const char* filepath) {
-    int width, height, nrChannels;
-    unsigned char* data = stbi_load(filepath, &width, &height, &nrChannels, 0);
-    if (!data) {
-        std::cerr << "Failed to load texture: " << filepath << std::endl;
-        return 0;
-    }
-    GLuint texID;
-    glGenTextures(1, &texID);
-    glBindTexture(GL_TEXTURE_2D, texID);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    GLenum format = GL_RGB;
-    if (nrChannels == 1) format=GL_RED;
-    else if (nrChannels == 3) format=GL_RGB;
-    else if (nrChannels == 4) format=GL_RGBA;
-
-    glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
-    glGenerateMipmap(GL_TEXTURE_2D);
-    stbi_image_free(data);
-    return texID;
-}
-
-// Setup scene with many objects
-void setupScene(std::vector<SceneObject>& sceneObjects, Mesh& cubeMesh) {
-    sceneObjects.clear();
-
-    // Floor
-    sceneObjects.push_back({cubeMesh, {0,-0.01f,0}, {0,0,0}, {50,0.02,50}, "Floor"});
-
-    // Walls
-    sceneObjects.push_back({cubeMesh, {0,2.5f,-25}, {0,0,0}, {50,5,0.2}, "Wall_Back"});
-    sceneObjects.push_back({cubeMesh, {0,2.5f,25}, {0,0,0}, {50,5,0.2}, "Wall_Front"});
-    sceneObjects.push_back({cubeMesh, {-25,2.5f,0}, {0,0,0}, {0.2,5,50}, "Wall_Left"});
-    sceneObjects.push_back({cubeMesh, {25,2.5f,0}, {0,0,0}, {0.2,5,50}, "Wall_Right"});
-
-    // Multiple Tables with chairs - spread across the room
-    float startX = -18;
-    float startZ = -12;
-    int rows=4, cols=4;
-    float spacingX=12, spacingZ=8;
-    for(int i=0; i<rows; ++i){
-        for(int j=0; j<cols; ++j){
-            float x = startX + i*spacingX;
-            float z = startZ + j*spacingZ;
-            // Table
-            sceneObjects.push_back({cubeMesh, {x,0.75f,z}, {0,0,0}, {3,0.75,3}, "Table"});
-            // Chairs at four corners
-            sceneObjects.push_back({cubeMesh, {x-1.5f,0.25f,z-1.5f}, {0,0,0}, {1,0.5,1}, "Chair"});
-            sceneObjects.push_back({cubeMesh, {x+1.5f,0.25f,z-1.5f}, {0,0,0}, {1,0.5,1}, "Chair"});
-            sceneObjects.push_back({cubeMesh, {x-1.5f,0.25f,z+1.5f}, {0,0,0}, {1,0.5,1}, "Chair"});
-            sceneObjects.push_back({cubeMesh, {x+1.5f,0.25f,z+1.5f}, {0,0,0}, {1,0.5,1}, "Chair"});
-        }
-    }
-
-    // Bar and counter
-    sceneObjects.push_back({cubeMesh, {20,1.0f,-10}, {0,0,0}, {4,1,8}, "BarCounter"});
-    // Stools for bar
-    for (int i=0; i<6; ++i){
-        float x = 18 + i*1.2f;
-        sceneObjects.push_back({cubeMesh, {x,0.25f,-10}, {0,0,0}, {0.5,0.5,0.5}, "BarStool"});
-    }
-
-    // Food station / kitchen
-    sceneObjects.push_back({cubeMesh, {-20,1.0f,15}, {0,0,0}, {8,2,4}, "Kitchen"});
-
-    // Decorations
-    sceneObjects.push_back({cubeMesh, {0,0.25f,0}, {0,0,0}, {0.5,0.5,0.5}, "Plant1"});
-    sceneObjects.push_back({cubeMesh, {10,0.25f,-20}, {0,0,0}, {0.5,0.5,0.5}, "Plant2"});
-    sceneObjects.push_back({cubeMesh, {-10,0.25f,10}, {0,0,0}, {0.5,0.5,0.5}, "Plant3"});
 }
